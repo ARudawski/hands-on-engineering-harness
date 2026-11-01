@@ -5,7 +5,7 @@ description: Turn agreed scope into a concise implementation specification with 
 
 # Write specification
 
-Load applicable guidance and existing task records. Write/update `<active-worktree>/.tmp/<task>/spec.md`; reuse its directory. Resolve material uncertainty before presenting a requirement as agreed.
+Load applicable guidance and existing task records. Write/update `<project-root>/.tmp/<task>/spec.md`; reuse its directory. A worktree root applies when present; otherwise use the active project directory without requiring VCS tools. Resolve material uncertainty before presenting a requirement as agreed.
 
 Include the objective, scope/non-goals, observable numbered ACs, approach/interfaces, decisions, sources and a planned check for each AC. Reuse IDs. Link applicable approved requirements and accepted durable decisions; describe the task delta rather than copy the baseline.
 

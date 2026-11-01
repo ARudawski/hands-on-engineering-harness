@@ -1,16 +1,16 @@
-# Linear planning and publication
+# Optional work-item publication
 
-Use configured integrations and their actual schemas. Discover workspace/team/project, canonical specification, overlapping work and required conventions. Do not impose issue types, labels, estimates, assignees or other optional metadata. Inaccessible evidence is a gap.
+Load this reference only for selected publication. Use the chosen tools and their actual schemas. Discover destination, required fields, supported relationships, canonical baseline and overlapping work. Do not infer a provider, tool name, team/project hierarchy or optional metadata. A capability needed for the requested representation must be available before promising writes. Missing access blocks that action, not independent local work; report it as pending without silently changing the request. Provider examples such as Linear/Jira do not imply runtime certification.
 
 ## Exact batch
 
-Keep proposed payloads in `tickets.md`: outcome/AC coverage, useful verification, dependencies, destination and every intended create/update/link/document write. Reference existing work by explicit remote ID; include its role and any approved changes. Discover capabilities before promising writes. Creating a team/project or changing a canonical document requires explicit inclusion in the approved batch.
+Keep exact proposed payloads in `tickets.md` or a linked batch: outcome/AC coverage, verification, supported dependencies, destination and every intended create/update/link/document write. Reference existing work by explicit remote ID; include its role and approved changes. Creating a destination or changing a canonical document requires explicit inclusion. Do not silently omit an unsupported relationship; agree its representation before approval.
 
 Generate one batch UUID before review. Include `Planning batch: <uuid>; draft: <id>` in every new resource's supported description/body, as part of the reviewed payload. Preserve that identity across revisions and resume; draft IDs alone and matching titles do not establish ownership. No custom field is required.
 
 Freeze the reviewed payload or record its fingerprint. Capture approval of that exact revision, destination and publication action. Only specified substitutions of returned IDs/URLs are automatic. Material scope, payload, destination or external-state changes require affected review and renewed approval.
 
-The shared canonical spec is the approved baseline; identify its revision and the local working copy/task delta. If publication creates/updates it, include the exact content and intended revision in the batch and reconcile the local record after readback.
+Respect the consumer's chosen canonical baseline; approved local records are the default. Identify its revision and any working-copy/task delta. If publication creates/updates it, include the exact content and intended revision in the batch and reconcile local records after readback.
 
 ## Publish and recover
 
