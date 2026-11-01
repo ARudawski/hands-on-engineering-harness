@@ -2,7 +2,9 @@
 
 Concise engineering workflows for Codex and Claude Code, packaged with stock APM.
 
-**Unreleased planning foundation.** Available: `clarify-scope`, `write-spec`, `plan-feature` and the independent `plan-reviewer`. Planning ends at reviewed-spec approval; ticket drafting, publication and delivery are outside this version.
+**Unreleased planning workflow.** Available: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature` and the independent `plan-reviewer`. Planning produces an approved local plan; work-item publication is optional. Implementation/delivery remains outside this version.
+
+After installation, a local project directory and native client tools are enough. No ticket system, VCS repository/client, hosting account or MCP server is required. This project's GitHub repository is its distribution source. Consumers may choose tools such as Jira/Linear or GitLab/GitHub; examples are not service-specific runtime certifications.
 
 ## Install
 
@@ -46,14 +48,20 @@ Add `<!-- apm:start -->` and `<!-- apm:end -->` on separate lines in `AGENTS.md`
 
 ## Use
 
-In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-feature Add an export preview`. The workflow researches, agrees scope, writes a specification and dispatches independent review, pausing for approval after each stage.
+In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-feature Add an export preview`. It researches, agrees scope, reviews a specification, reviews an actionable local plan, then hands it off. The first four stages pause for human approval. An existing task description or local specification is sufficient.
 
-Use `clarify-scope` for unresolved decisions and `write-spec` for already agreed scope. Task records live in the active worktree's `.tmp/<task>/`: `index.md` is navigation; `spec.md` holds the specification, decisions and evidence.
+For headless Codex CLI execution outside a repository, use its `--skip-git-repo-check` option on `codex exec`, including resumes. Keep your existing sandbox and approval policy.
+
+Use `clarify-scope` for unresolved decisions, `write-spec` for agreed scope and `plan-slices` for small verifiable outcomes. Helpers retain their own scope; interdependent slicing requires PLAN review. Reuse `.tmp/<task>/` in the project root: navigation in `index.md`, scope/plan/IDs/approvals/evidence in `spec.md` or a linked Markdown artifact. Local planning needs no remote IDs, UUID or publication ledger.
+
+Request publication explicitly when needed. Its exact payloads/destination receive review and separate scoped authority, within or after plan approval. Selected publication uses `tickets.md` and `publication.md` for payloads, returned identities and readback. Missing tools leave that action pending; the harness preserves usable local work and never silently drops an outstanding request. Connected tools alone do not authorize writes.
 
 ## Verification and limits
 
-- Packaging checks use stock APM 0.35.0 and Python 3.11; run `python -m unittest discover -s tests -v` with APM on PATH (or set `APM_BIN`). They cover fresh/repeat/update installs, collisions and guidance preservation. CI needs no model credentials.
-- Codex CLI 0.166.0-alpha.5.1 on Windows passed synthetic planning, resume/correction and missing-context/reviewer scenarios: stage pauses, native reviewer context delivery and the stop after specification approval.
+- Checks use stock APM 0.35.0 and Python 3.11; run `python -m unittest discover -s tests -v` with APM on PATH (or set `APM_BIN`). They cover native assets, fresh/repeat/update installs, collisions, guidance preservation and the local tool fixture. CI needs no model credentials.
+- Supervised Codex CLI 0.166.0-alpha.5.1 runs on Windows verified local planning/resume outside Git with Git unavailable, no service calls, all four approval pauses and separate native specification/plan reviews. Ordinary task records stayed Markdown.
+- A synthetic flat-board schema verified later publication review, a returned key/URL checkpoint and resumed readback without duplicate creation. Missing selected capability remained pending. Later publication starts a fresh reviewer; corrections reuse that publication reviewer. No live service certification is implied.
+- Local fixtures verified approved payloads, parent-first publication, ID checkpoints, dependencies, readback and recovery after interruption/lost response. Unresolved scope, rejected/stale batches, missing writers and foreign/ambiguous matches stopped writes; mismatched readback remained incomplete. No live Linear publication was tested.
 - Claude Code compatibility is assumed from native format/package checks; no Claude model execution is claimed.
 - Claude's reviewer metadata allows `Read`, `Glob` and `Grep`. Stock APM drops that allowlist for Codex and reports a warning. Codex inherits parent permissions; its review-only behavior is an instruction contract, not an isolated sandbox. This configuration does not provide enforced tool isolation in Codex.
 
