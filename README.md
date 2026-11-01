@@ -2,7 +2,7 @@
 
 Concise engineering workflows for Codex and Claude Code, packaged with stock APM.
 
-**Unreleased planning foundation.** Available: `clarify-scope`, `write-spec`, `plan-feature` and the independent `plan-reviewer`. Planning ends at reviewed-spec approval; ticket drafting, publication and delivery are outside this version.
+**Unreleased planning workflow.** Available: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature` and the independent `plan-reviewer`. Planning runs through approved Linear publication. Ticket implementation/delivery remains outside this version.
 
 ## Install
 
@@ -46,14 +46,14 @@ Add `<!-- apm:start -->` and `<!-- apm:end -->` on separate lines in `AGENTS.md`
 
 ## Use
 
-In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-feature Add an export preview`. The workflow researches, agrees scope, writes a specification and dispatches independent review, pausing for approval after each stage.
+In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-feature Add an export preview`. The workflow researches, agrees scope, reviews a specification, drafts/reviews the exact ticket batch, then publishes it. The first four stages pause for human approval; publication requires approval of the exact batch and destination.
 
-Use `clarify-scope` for unresolved decisions and `write-spec` for already agreed scope. Task records live in the active worktree's `.tmp/<task>/`: `index.md` is navigation; `spec.md` holds the specification, decisions and evidence.
+Use `clarify-scope` for unresolved decisions, `write-spec` for agreed scope and `plan-slices` for small verifiable outcomes. Helpers retain their own scope; interdependent slicing requires PLAN review. Records live in `.tmp/<task>/`: index links, scope/approvals in `spec.md`, exact drafts in `tickets.md`, and returned IDs/operations/readback in `publication.md`. Batch/draft markers in approved payloads support recovery; ambiguous or changed state stops dependent writes.
 
 ## Verification and limits
 
-- Packaging checks use stock APM 0.35.0 and Python 3.11; run `python -m unittest discover -s tests -v` with APM on PATH (or set `APM_BIN`). They cover fresh/repeat/update installs, collisions and guidance preservation. CI needs no model credentials.
-- Codex CLI 0.166.0-alpha.5.1 on Windows passed synthetic planning, resume/correction and missing-context/reviewer scenarios: stage pauses, native reviewer context delivery and the stop after specification approval.
+- Checks use stock APM 0.35.0 and Python 3.11; run `python -m unittest discover -s tests -v` with APM on PATH (or set `APM_BIN`). They cover native assets, fresh/repeat/update installs, collisions, guidance preservation and the local tool fixture. CI needs no model credentials.
+- Supervised Codex CLI 0.166.0-alpha.5.1 runs on Windows verified approval pauses, separate specification/batch reviewers, standalone slicing and a reviewer correction in the same session. A local fixture verified approved payloads, parent-first publication, saved IDs, dependencies and readback. Recovery and invalid-publication scenarios remain pending; no live Linear publication was tested.
 - Claude Code compatibility is assumed from native format/package checks; no Claude model execution is claimed.
 - Claude's reviewer metadata allows `Read`, `Glob` and `Grep`. Stock APM drops that allowlist for Codex and reports a warning. Codex inherits parent permissions; its review-only behavior is an instruction contract, not an isolated sandbox. This configuration does not provide enforced tool isolation in Codex.
 

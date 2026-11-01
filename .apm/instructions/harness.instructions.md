@@ -13,7 +13,8 @@ Use the selected skill's stages. Do not start a full workflow merely because its
 | --- | --- |
 | Resolve material decisions | `clarify-scope` |
 | Record agreed scope | `write-spec` |
-| Research and review a feature specification | `plan-feature` |
+| Plan a feature through approved Linear publication | `plan-feature` |
+| Divide agreed work into verifiable outcomes | `plan-slices` |
 | Independent planning assessment | `plan-reviewer` |
 
 ## Task records
@@ -24,6 +25,6 @@ Preserve IDs, decisions, approvals and evidence when resuming or migrating older
 
 ## Authorization and evidence
 
-Planning authorizes task records, not implementation, commits, pushes or external publication. Follow the selected workflow's approval gates and reuse existing authorization within its scope. Reused evidence grants no new authorization. Preserve unrelated edits and consumer settings.
+Planning alone authorizes task records. Implementation, commits, pushes and external publication need their own scoped authorization. Follow the selected workflow's approval gates and reuse existing authorization within its scope. Reused evidence grants no new authorization. Preserve unrelated edits and consumer settings.
 
 Use configured integrations and actual tool schemas; discover project conventions rather than inventing required fields. Keep credentials out of records. Separate observed behavior, assumptions, planned checks, results and human acceptance. Identify assessed scope/revision, bound retries and recheck affected evidence after changes. Report gaps; do not treat static output or an empty review as runtime proof.

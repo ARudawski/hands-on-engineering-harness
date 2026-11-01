@@ -1,9 +1,11 @@
 """Stock APM delivery checks. Run: python -m unittest discover -s tests -v."""
 
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -67,10 +69,11 @@ class InstallTests(unittest.TestCase):
 
         installed = self.run_apm("install", "--only", "apm")
         self.run_apm("compile", "--target", "codex")
-        for source in (SOURCE / ".apm/skills").iterdir():
-            for target in (".agents", ".claude"):
-                actual = consumer / target / "skills" / source.name / "SKILL.md"
-                self.assertEqual(actual.read_bytes(), (source / "SKILL.md").read_bytes())
+        for source in (SOURCE / ".apm/skills").rglob("*"):
+            if source.is_file():
+                for target in (".agents", ".claude"):
+                    actual = consumer / target / "skills" / source.relative_to(SOURCE / ".apm/skills")
+                    self.assertEqual(actual.read_bytes(), source.read_bytes())
         agent_source = (SOURCE / ".apm/agents/plan-reviewer.agent.md").read_text(encoding="utf-8")
         _, header, body = agent_source.split("---", 2)
         metadata = yaml.safe_load(header)
@@ -86,7 +89,7 @@ class InstallTests(unittest.TestCase):
         for path in (".claude/rules/harness.md", "AGENTS.md"):
             self.assertIn(instruction.strip(), (consumer / path).read_text(encoding="utf-8"))
 
-        native_paths = [*consumer.glob(".agents/skills/*/SKILL.md"), *consumer.glob(".claude/skills/*/SKILL.md"),
+        native_paths = [*(p for target in (".agents", ".claude") for p in (consumer / target / "skills").rglob("*") if p.is_file()),
                         consumer / ".codex/agents/plan-reviewer.toml", consumer / ".claude/agents/plan-reviewer.md",
                         consumer / ".claude/rules/harness.md"]
         before = {path: path.read_bytes() for path in native_paths}
@@ -175,6 +178,55 @@ class InstallTests(unittest.TestCase):
             self.assertIn("Hands-on Engineering Harness", result)
             self.assertNotIn("Old generated content", result)
             self.assertEqual(nested.read_bytes(), b"# Consumer module guidance\n")
+
+
+class FixtureTests(unittest.TestCase):
+    def test_local_protocol_and_checkpoint(self):
+        with tempfile.TemporaryDirectory(prefix="harness-tools-") as directory:
+            root = Path(directory)
+            state, log, ledger = root / "state.json", root / "calls.jsonl", root / "consumer/.tmp/task/publication.md"
+            ledger.parent.mkdir(parents=True)
+            state.write_text(json.dumps({"destination": {"team": "FX-TEAM", "project": "FX-PROJECT"},
+                                         "canonical_spec": {"id": "SPEC-1", "revision": "C1"}, "issues": []}), encoding="utf-8")
+            process = subprocess.Popen([sys.executable, str(SOURCE / "tests/fixtures/linear.py"),
+                                        "--state", str(state), "--log", str(log), "--ledger", str(ledger)],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True, encoding="utf-8")
+            try:
+                def call(method, params=None):
+                    process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}, ensure_ascii=False) + "\n")
+                    process.stdin.flush()
+                    response = json.loads(process.stdout.readline())
+                    self.assertEqual(response["id"], 1)
+                    return response["result"]
+
+                self.assertIn("tools", call("initialize")["capabilities"])
+                self.assertEqual({t["name"] for t in call("tools/list")["tools"]}, {"inspect_workspace", "save_work_item"})
+                data = {"team": "FX-TEAM", "project": "FX-PROJECT", "title": "Parent Grüße 漢字", "description": "Approved payload"}
+                parent = call("tools/call", {"name": "save_work_item", "arguments": data})["structuredContent"]
+                self.assertEqual(parent["title"], data["title"])
+                ledger.write_text("Parent created: " + parent["id"], encoding="utf-8")
+                child = call("tools/call", {"name": "save_work_item", "arguments": {**data, "title": "Child", "parentId": parent["id"], "blockedBy": [parent["id"]]}})["structuredContent"]
+                self.assertEqual(child["parentId"], parent["id"])
+                self.assertEqual(child["blockedBy"], [parent["id"]])
+                final = call("tools/call", {"name": "inspect_workspace", "arguments": {}})["structuredContent"]
+                self.assertEqual(len(final["issues"]), 2)
+                denied = call("tools/call", {"name": "save_work_item", "arguments": {**data, "team": "OTHER"}})
+                self.assertTrue(denied["isError"])
+                entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+                self.assertIsNone(entries[0]["ledger_before"])
+                self.assertIn(parent["id"], entries[1]["ledger_before"])
+                self.assertEqual(len(json.loads(state.read_text(encoding="utf-8"))["issues"]), 2)
+            finally:
+                process.stdin.close()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+            self.assertEqual(process.returncode, 0)
 
 
 if __name__ == "__main__":
