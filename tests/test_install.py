@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -213,6 +214,11 @@ class FixtureTests(unittest.TestCase):
                 self.assertEqual(len(final["issues"]), 2)
                 denied = call("tools/call", {"name": "save_work_item", "arguments": {**data, "team": "OTHER"}})
                 self.assertTrue(denied["isError"])
+                readonly = json.loads(state.read_text(encoding="utf-8"))
+                readonly["_fixture"] = {"read_only": True}
+                state.write_text(json.dumps(readonly), encoding="utf-8")
+                self.assertEqual([t["name"] for t in call("tools/list")["tools"]], ["inspect_workspace"])
+                self.assertTrue(call("tools/call", {"name": "save_work_item", "arguments": data})["isError"])
                 entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
                 self.assertIsNone(entries[0]["ledger_before"])
                 self.assertIn(parent["id"], entries[1]["ledger_before"])
@@ -227,6 +233,26 @@ class FixtureTests(unittest.TestCase):
                 process.stdout.close()
                 process.stderr.close()
             self.assertEqual(process.returncode, 0)
+
+    def test_uncertain_create_and_changed_readback(self):
+        invoke = runpy.run_path(str(SOURCE / "tests/fixtures/linear.py"))["invoke"]
+        with tempfile.TemporaryDirectory(prefix="harness-faults-") as directory:
+            state = Path(directory) / "state.json"
+            state.write_text(json.dumps({"destination": {"team": "T", "project": "P"}, "issues": [],
+                                         "_fixture": {"error_on_create": 1, "mismatch_on_create": 2}}), encoding="utf-8")
+            data = {"team": "T", "project": "P", "title": "Approved", "description": "Exact payload"}
+            with self.assertRaises(OSError):
+                invoke("save_work_item", data, state)
+            recovered = invoke("inspect_workspace", {}, state)
+            self.assertNotIn("_fixture", recovered)
+            self.assertEqual(recovered["issues"][0]["id"], "FX-1")
+            self.assertEqual(recovered["issues"][0]["description"], data["description"])
+            created = invoke("save_work_item", {**data, "parentId": "FX-1"}, state)
+            self.assertEqual(created["description"], data["description"])
+            readback = invoke("inspect_workspace", {"id": created["id"]}, state)["issues"][0]
+            self.assertNotEqual(readback["description"], created["description"])
+            self.assertEqual(len(invoke("inspect_workspace", {}, state)["issues"]), 2)
+            self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["_fixture"], {})
 
 
 if __name__ == "__main__":

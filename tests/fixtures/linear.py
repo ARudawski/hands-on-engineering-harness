@@ -2,6 +2,8 @@
 
 The operator keeps state/log outside the agent-writable consumer. Tool arguments
 never contain filesystem paths. This is not a Linear client or package runtime.
+Operator-only _fixture state can disable writes or inject a lost create response
+and a changed readback at specified creation counts. Controls are never exposed.
 """
 
 import argparse
@@ -31,6 +33,7 @@ TOOLS = [
 
 def invoke(name, arguments, state_path):
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    controls = state.get("_fixture", {})
     if name == "inspect_workspace":
         if set(arguments) - {"id", "query"} or any(not isinstance(v, str) for v in arguments.values()):
             raise ValueError("Expected optional string id/query")
@@ -40,9 +43,11 @@ def invoke(name, arguments, state_path):
         if "query" in arguments:
             query = arguments["query"].casefold()
             issues = [i for i in issues if query in (i["title"] + "\n" + i["description"]).casefold()]
-        return {**state, "issues": issues}
+        return {**{k: v for k, v in state.items() if k != "_fixture"}, "issues": issues}
     if name != "save_work_item":
         raise ValueError("Unknown fixture tool")
+    if controls.get("read_only"):
+        raise ValueError("Write capability unavailable")
     if set(arguments) - FIELDS.keys():
         raise ValueError("Unsupported fields")
     if any(arguments.get(k) != state["destination"][k] for k in ("team", "project")):
@@ -75,8 +80,17 @@ def invoke(name, arguments, state_path):
         issue = {"id": f"FX-{number}", "url": f"https://fixture.invalid/issues/FX-{number}"}
         state["issues"].append(issue)
     issue.update(arguments)
+    result = dict(issue)
+    uncertain = "id" not in arguments and controls.get("error_on_create") == len(state["issues"])
+    if uncertain:
+        del controls["error_on_create"]
+    if "id" not in arguments and controls.get("mismatch_on_create") == len(state["issues"]):
+        issue["description"] += "\nUnexpected external edit."
+        del controls["mismatch_on_create"]
     state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    return issue
+    if uncertain:
+        raise OSError("Response lost after request; outcome unknown.")
+    return result
 
 
 def main():
@@ -94,7 +108,8 @@ def main():
         if method == "initialize":
             result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "local-linear-fixture", "version": "0.1.0"}}
         elif method == "tools/list":
-            result = {"tools": TOOLS}
+            controls = json.loads(paths.state.read_text(encoding="utf-8")).get("_fixture", {})
+            result = {"tools": TOOLS[:1] if controls.get("read_only") else TOOLS}
         elif method == "ping":
             result = {}
         elif method == "tools/call":

@@ -53,7 +53,8 @@ Use `clarify-scope` for unresolved decisions, `write-spec` for agreed scope and 
 ## Verification and limits
 
 - Checks use stock APM 0.35.0 and Python 3.11; run `python -m unittest discover -s tests -v` with APM on PATH (or set `APM_BIN`). They cover native assets, fresh/repeat/update installs, collisions, guidance preservation and the local tool fixture. CI needs no model credentials.
-- Supervised Codex CLI 0.166.0-alpha.5.1 runs on Windows verified approval pauses, separate specification/batch reviewers, standalone slicing and a reviewer correction in the same session. A local fixture verified approved payloads, parent-first publication, saved IDs, dependencies and readback. Recovery and invalid-publication scenarios remain pending; no live Linear publication was tested.
+- Supervised Codex CLI 0.166.0-alpha.5.1 runs on Windows verified approval pauses, separate specification/batch reviewers, standalone slicing and a reviewer correction in the same session.
+- Local fixtures verified approved payloads, parent-first publication, ID checkpoints, dependencies, readback and recovery after interruption/lost response. Unresolved scope, rejected/stale batches, missing writers and foreign/ambiguous matches stopped writes; mismatched readback remained incomplete. No live Linear publication was tested.
 - Claude Code compatibility is assumed from native format/package checks; no Claude model execution is claimed.
 - Claude's reviewer metadata allows `Read`, `Glob` and `Grep`. Stock APM drops that allowlist for Codex and reports a warning. Codex inherits parent permissions; its review-only behavior is an instruction contract, not an isolated sandbox. This configuration does not provide enforced tool isolation in Codex.
 
