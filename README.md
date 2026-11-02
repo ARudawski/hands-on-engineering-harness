@@ -52,6 +52,8 @@ In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-f
 
 Use `$deliver-task <local task or issue>` in Codex, or `/deliver-task <local task or issue>` in Claude Code. It understands, specifies, slices, prepares, implements/reviews each slice, verifies the combined change, checks applicable CI and hands off. Every stage and reviewed slice pauses for approval, including N/A stages. `implement-slice` handles authorized scope; `review-code` dispatches independent assessment without fixes. Helpers do not start delivery stages.
 
+For example, plan a bounded CSV preview with `plan-feature`, approve its local specification and plan, then pass `.tmp/csv-preview/spec.md` to `deliver-task` in the same project. Delivery retains the approved scope, IDs and decisions; publication remains optional.
+
 Local delivery uses before/after content and path inventories when VCS is absent, including added/deleted paths. Select VCS, push, Draft review requests and hosted CI explicitly when needed. Missing selected capabilities remain pending; unselected actions are N/A. Reading an issue grants no writes. Any review request remains Draft; merge/deployment/release require separate authority.
 
 For headless Codex CLI execution outside a repository, use its `--skip-git-repo-check` option on `codex exec`, including resumes. Keep your existing sandbox and approval policy.
@@ -71,6 +73,7 @@ Request publication explicitly when needed. Its exact payloads/destination recei
 - Standalone helper checks verified scoped implementation with two red-to-green tests and independent CODE findings without fixes or extra delivery stages. Reviewer transcripts establish actual context/comparison reads and inspection-only behavior.
 - Controlled local checks verified checkpoint/resume, correction verification by the original reviewer, and incomplete assessments for missing reviewers, approved context or comparisons. Remote issue input with writable tools connected caused no implicit writes.
 - Selected-tool fixtures used normal Git transport to a local bare repository and a synthetic Draft/CI host. Missing, stale, running, failed or unavailable CI stayed incomplete; only matching source/base passed. Scoped writes, bounded polling, preserved Draft identity and final readback were checked. These are fixture results, not live service certifications.
+- An in-place APM update verified both targets in the original planning consumer. Codex reused its approved CSV plan through local delivery/handoff; 11 contract tests, six integration checks and independent slice/combined reviews passed.
 - Claude's reviewer metadata allows `Read`, `Glob` and `Grep`. Stock APM drops that allowlist for Codex and reports a warning. Codex inherits parent permissions; its review-only behavior is an instruction contract, not an isolated sandbox. This configuration does not provide enforced tool isolation in Codex.
 
 Static installation checks do not prove routing, context delivery or runtime permission behavior. No cloud or desktop-specific compatibility is claimed.
