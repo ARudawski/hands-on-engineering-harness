@@ -2,13 +2,13 @@
 
 Concise engineering workflows for Codex and Claude Code, packaged with stock APM.
 
-**Unreleased workflow package.** Seven skills cover planning and delivery: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
+Seven skills cover planning and delivery: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
 
 After installation, a local project directory and native client tools are enough. No ticket system, VCS repository/client, hosting account or MCP server is required. This project's GitHub repository is its distribution source. Consumers may choose tools such as Jira/Linear or GitLab/GitHub; examples are not service-specific runtime certifications.
 
 ## Install
 
-Use APM 0.35.0 and a client supporting project skills/custom agents. Replace `REF` with a reviewed commit from the development branch; there is no release tag yet.
+Use stock APM 0.35.0 and a client supporting project skills/custom agents. Replace `REF` with a reviewed full commit SHA. See the tested support below.
 
 ```sh
 # Codex
@@ -19,7 +19,7 @@ apm compile --target codex
 apm install ARudawski/hands-on-engineering-harness#REF --target claude
 ```
 
-APM installs skills to `.agents/skills/` (Codex) or `.claude/skills/` (Claude), with native reviewer definitions and guidance. Add `.tmp/` to the consumer's ignore file. Existing project/module guidance remains authoritative.
+APM installs skills to `.agents/skills/` (Codex) or `.claude/skills/` (Claude), with native reviewer definitions and guidance. With version control, ignore `.tmp/`. Existing project/module guidance remains authoritative.
 
 The package supplies no installer hooks, provider/model pins or MCP configuration. Use your existing models, credentials and configured tools.
 
@@ -52,6 +52,8 @@ In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-f
 
 Use `$deliver-task <local task or issue>` in Codex, or `/deliver-task <local task or issue>` in Claude Code. It understands, specifies, slices, prepares, implements/reviews each slice, verifies the combined change, checks applicable CI and hands off. Every stage and reviewed slice pauses for approval, including N/A stages. `implement-slice` handles authorized scope; `review-code` dispatches independent assessment without fixes. Helpers do not start delivery stages.
 
+For example, plan a bounded CSV preview with `plan-feature`, approve its local specification and plan, then pass `.tmp/csv-preview/spec.md` to `deliver-task` in the same project. Delivery retains the approved scope, IDs and decisions; publication remains optional.
+
 Local delivery uses before/after content and path inventories when VCS is absent, including added/deleted paths. Select VCS, push, Draft review requests and hosted CI explicitly when needed. Missing selected capabilities remain pending; unselected actions are N/A. Reading an issue grants no writes. Any review request remains Draft; merge/deployment/release require separate authority.
 
 For headless Codex CLI execution outside a repository, use its `--skip-git-repo-check` option on `codex exec`, including resumes. Keep your existing sandbox and approval policy.
@@ -60,20 +62,30 @@ Use `clarify-scope` for unresolved decisions, `write-spec` for agreed scope and 
 
 Request publication explicitly when needed. Its exact payloads/destination receive review and separate scoped authority, within or after plan approval. Selected publication uses `tickets.md` and `publication.md` for payloads, returned identities and readback. Missing tools leave that action pending; the harness preserves usable local work and never silently drops an outstanding request. Connected tools alone do not authorize writes.
 
-## Verification and limits
+## Verification and support
 
-- Checks use stock APM 0.35.0 and Python 3.11; run `python -m unittest discover -s tests -v` with APM on PATH (or set `APM_BIN`). They cover native assets, fresh/repeat/update installs, collisions, guidance preservation and the local tool fixture. CI needs no model credentials.
-- Supervised Codex CLI 0.166.0-alpha.5.1 runs on Windows verified local planning/resume outside Git with Git unavailable, no service calls, all four approval pauses and separate native specification/plan reviews. Ordinary task records stayed Markdown.
-- A synthetic flat-board schema verified later publication review, a returned key/URL checkpoint and resumed readback without duplicate creation. Missing selected capability remained pending. Later publication starts a fresh reviewer; corrections reuse that publication reviewer. No live service certification is implied.
-- Local fixtures verified approved payloads, parent-first publication, ID checkpoints, dependencies, readback and recovery after interruption/lost response. Unresolved scope, rejected/stale batches, missing writers and foreign/ambiguous matches stopped writes; mismatched readback remained incomplete. No live Linear publication was tested.
-- Claude Code compatibility is assumed from native format/package checks; no Claude model execution is claimed.
-- Supervised Codex CLI checks also verified local delivery outside Git: two dependent increments, before/after comparisons including added/deleted files, every stage/slice pause (including prepare/CI N/A), separate PLAN/CODE assessments, combined review and local handoff. The example application passed 17 behavior tests; protected notes/settings stayed unchanged.
-- Standalone helper checks verified scoped implementation with two red-to-green tests and independent CODE findings without fixes or extra delivery stages. Reviewer transcripts establish actual context/comparison reads and inspection-only behavior.
-- Controlled local checks verified checkpoint/resume, correction verification by the original reviewer, and incomplete assessments for missing reviewers, approved context or comparisons. Remote issue input with writable tools connected caused no implicit writes.
-- Selected-tool fixtures used normal Git transport to a local bare repository and a synthetic Draft/CI host. Missing, stale, running, failed or unavailable CI stayed incomplete; only matching source/base passed. Scoped writes, bounded polling, preserved Draft identity and final readback were checked. These are fixture results, not live service certifications.
-- Claude's reviewer metadata allows `Read`, `Glob` and `Grep`. Stock APM drops that allowlist for Codex and reports a warning. Codex inherits parent permissions; its review-only behavior is an instruction contract, not an isolated sandbox. This configuration does not provide enforced tool isolation in Codex.
+| Surface | Tested scope |
+| --- | --- |
+| APM 0.35.0 | Both-target native skills/references, reviewers and instructions; fresh/repeat/update installs, collisions and unrelated-settings preservation. |
+| Codex CLI 0.166.0-alpha.5.1, Windows | Supervised local planning, delivery and helpers; approval gates, independent review, comparison, interruption/recovery and local handoff. |
+| Claude Code | Native package/format checks; model execution and runtime compatibility remain assumed. |
+| Package CI | Ubuntu 24.04, Python 3.11 and stock APM 0.35.0; installation/ownership and local tool-fixture tests, without model credentials. |
 
-Static installation checks do not prove routing, context delivery or runtime permission behavior. No cloud or desktop-specific compatibility is claimed.
+These are tested baselines, not a minimum-version or broader compatibility guarantee. No cloud, desktop-specific, plugin or live-service certification is claimed. Models and connections remain consumer-owned.
+
+Local Codex checks ran outside Git with Git unavailable and service tools disabled. They verified all planning/delivery approval pauses, fresh/correction reviewers, actual context/comparison reads, missing prerequisites and preservation of unrelated files. An in-place both-target update continued the original approved CSV plan through delivery: 11 contract tests and six integration checks passed. A separate two-increment example passed 17 behavior tests; helper checks covered scoped red/green implementation and findings without fixes. Ordinary task records stayed Markdown.
+
+Controlled provider fixtures verified actual selected schemas, reviewed/scoped publication, parent/dependency ordering, returned IDs, interruption/readback and duplicate avoidance. Unresolved/rejected/stale/foreign/ambiguous requests stopped writes; mismatched readback remained incomplete. Missing selected capabilities stayed pending. Selected delivery used real Git transport to a local bare repository and a synthetic Draft/CI host; missing/stale/running/failed/unavailable required CI could not complete validation. Only matching source/base evidence passed bounded follow-up. Fixture results do not certify a live ticket or hosting service.
+
+Claude reviewer metadata allows `Read`, `Glob` and `Grep`. APM drops that allowlist for Codex and warns; Codex reviewers inherit parent permissions. Their inspection-only behavior is an instruction contract, not an isolated read-only sandbox. Static installed output does not prove runtime routing, context delivery or permissions.
+
+Run package checks with Python 3.11 and APM 0.35.0 on PATH (or set `APM_BIN`):
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+See [contribution guidance](CONTRIBUTING.md) for changes and validation.
 
 ## License
 
