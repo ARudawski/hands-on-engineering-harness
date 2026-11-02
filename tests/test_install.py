@@ -1,5 +1,6 @@
 """Stock APM delivery checks. Run: python -m unittest discover -s tests -v."""
 
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 from pathlib import Path
@@ -10,8 +11,11 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 import yaml
+
+from apm_support import isolated_apm_env, require_apm_version
 
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -20,12 +24,21 @@ AGENTS = ("plan-reviewer", "code-reviewer")
 
 
 class InstallTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.apm = os.environ.get("APM_BIN") or shutil.which("apm")
+        if cls.apm and Path(cls.apm).is_file():
+            cls.apm = str(Path(cls.apm).resolve())
+        directory = tempfile.TemporaryDirectory(prefix="harness-apm-version-")
+        cls.addClassCleanup(directory.cleanup)
+        version = require_apm_version(cls.apm, isolated_apm_env(directory.name), SOURCE)
+        print(f"Stock APM version: {version}", file=sys.stderr)
+
     def setUp(self):
-        self.apm = os.environ.get("APM_BIN") or shutil.which("apm")
-        self.assertIsNotNone(self.apm, "Install apm-cli==0.35.0 or set APM_BIN")
         directory = tempfile.TemporaryDirectory(prefix="harness-install-")
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
+        self.apm_env = isolated_apm_env(self.root / "state")
         self.package = self.root / "package"
         self.package.mkdir()
         # Export package inputs, not checkout metadata, environments or task notes.
@@ -46,7 +59,7 @@ class InstallTests(unittest.TestCase):
     def run_apm(self, *arguments, consumer=None, expected_code=0):
         result = subprocess.run(
             [self.apm, *arguments], cwd=consumer or self.consumer,
-            env={**os.environ, "APM_HOME": str(self.root / "apm-home")},
+            env=self.apm_env,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         )
         self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
@@ -260,6 +273,84 @@ class FixtureTests(unittest.TestCase):
             self.assertNotEqual(readback["description"], created["description"])
             self.assertEqual(len(invoke("inspect_workspace", {}, state)["issues"]), 2)
             self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["_fixture"], {})
+
+
+class ApmSupportTests(unittest.TestCase):
+    def test_isolated_user_state(self):
+        prerequisite = "State-path checks require apm-cli==0.35.0 in this Python; run python -m pip install apm-cli==0.35.0."
+        try:
+            self.assertEqual(version("apm-cli"), "0.35.0", prerequisite)
+        except PackageNotFoundError:
+            self.fail(prerequisite)
+        with tempfile.TemporaryDirectory(prefix="harness-isolation-") as directory:
+            root = Path(directory)
+            parent = root / "parent"
+            (parent / ".apm").mkdir(parents=True)
+            (parent / ".apm/config.json").write_text('{"install_target": "parent-sentinel"}', encoding="utf-8")
+            (parent / "cache").mkdir()
+            (parent / "cache/sentinel").write_text("keep", encoding="utf-8")
+            before = {p.relative_to(parent): p.read_bytes() for p in parent.rglob("*") if p.is_file()}
+            base = dict(os.environ)
+            for key in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APM_HOME", "APPDATA", "LOCALAPPDATA",
+                        "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "APM_CACHE_DIR", "APM_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+                base[key] = str(parent)
+            base["APM_NO_CACHE"] = "1"
+            original = base.copy()
+            env = isolated_apm_env(root / "isolated", base)
+            self.assertEqual(base, original)
+            probe = """import json
+from pathlib import Path
+from apm_cli import config
+from apm_cli.cache.paths import get_cache_root
+from apm_cli.install.locking import acquire_lifecycle_lock
+config.ensure_config_exists()
+lock = acquire_lifecycle_lock(timeout=0)
+held = lock.is_locked and Path(lock.lock_file).is_file()
+lock.release()
+print(json.dumps({'home': str(Path.home()), 'config': config.CONFIG_FILE,
+                  'cache': str(get_cache_root()), 'lock': str(lock.lock_file),
+                  'temp': config.get_apm_temp_dir(),
+                  'lock_acquired': held,
+                  'settings': config.get_config()}))
+"""
+            result = subprocess.run([sys.executable, "-c", probe], cwd=root, env=env,
+                                    capture_output=True, text=True, encoding="utf-8", timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            observed = json.loads(result.stdout)
+            for key in ("home", "config", "cache", "lock", "temp"):
+                self.assertTrue(Path(observed[key]).resolve().is_relative_to((root / "isolated").resolve()), observed)
+                if key != "lock":
+                    self.assertTrue(Path(observed[key]).exists(), observed)
+            self.assertTrue(observed["lock_acquired"], observed)
+            self.assertNotEqual(observed["settings"].get("install_target"), "parent-sentinel")
+            after = {p.relative_to(parent): p.read_bytes() for p in parent.rglob("*") if p.is_file()}
+            self.assertEqual(after, before)
+
+    def test_version_response_validation(self):
+        banner = "Agent Package Manager (APM) CLI version "
+        for code, output, accepted in ((0, banner + "0.35.0\n", True), (0, banner + "0.36.0\n", False),
+                                       (0, banner + "0.35.0rc1\n", False), (0, "Python 3.11.9\n", False),
+                                       (1, banner + "0.35.0\n", False)):
+            with self.subTest(code=code, output=output), patch("apm_support.subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(["apm", "--version"], code, output, "")
+                if accepted:
+                    self.assertEqual(require_apm_version("apm", {}, SOURCE), "0.35.0")
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "require 0.35.0.*APM_BIN"):
+                        require_apm_version("apm", {}, SOURCE)
+                self.assertEqual(run.call_args.args[0], ["apm", "--version"])
+                self.assertEqual(run.call_count, 1)
+
+    def test_unavailable_version_check(self):
+        with tempfile.TemporaryDirectory(prefix="harness-version-failure-") as directory:
+            env = isolated_apm_env(directory)
+            with self.assertRaisesRegex(RuntimeError, "unavailable.*APM_BIN"):
+                require_apm_version(None, env, directory)
+            with self.assertRaisesRegex(RuntimeError, "Cannot check APM version.*APM_BIN"):
+                require_apm_version(str(Path(directory) / "missing-apm"), env, directory)
+            with patch("apm_support.subprocess.run", side_effect=subprocess.TimeoutExpired("apm --version", 120)):
+                with self.assertRaisesRegex(RuntimeError, "Cannot check APM version.*APM_BIN"):
+                    require_apm_version("apm", env, directory)
 
 
 if __name__ == "__main__":

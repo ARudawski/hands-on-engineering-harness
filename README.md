@@ -69,7 +69,7 @@ Request publication explicitly when needed. Its exact payloads/destination recei
 | APM 0.35.0 | Both-target native skills/references, reviewers and instructions; fresh/repeat/update installs, collisions and unrelated-settings preservation. |
 | Codex CLI 0.166.0-alpha.5.1, Windows | Supervised local planning, delivery and helpers; approval gates, independent review, comparison, interruption/recovery and local handoff. |
 | Claude Code | Native package/format checks; model execution and runtime compatibility remain assumed. |
-| Package CI | Ubuntu 24.04, Python 3.11 and stock APM 0.35.0; installation/ownership and local tool-fixture tests, without model credentials. |
+| Package CI | Ubuntu 24.04, Python 3.11 and stock APM 0.35.0; installation/ownership, local tool-fixture and model-free smoke-driver guards, without model credentials. |
 
 These are tested baselines, not a minimum-version or broader compatibility guarantee. No cloud, desktop-specific, plugin or live-service certification is claimed. Models and connections remain consumer-owned.
 
@@ -79,11 +79,40 @@ Controlled provider fixtures verified actual selected schemas, reviewed/scoped p
 
 Claude reviewer metadata allows `Read`, `Glob` and `Grep`. APM drops that allowlist for Codex and warns; Codex reviewers inherit parent permissions. Their inspection-only behavior is an instruction contract, not an isolated read-only sandbox. Static installed output does not prove runtime routing, context delivery or permissions.
 
-Run package checks with Python 3.11 and APM 0.35.0 on PATH (or set `APM_BIN`):
+Run package checks with Python 3.11 and `apm-cli==0.35.0` installed in that interpreter. APM must be on PATH, or set `APM_BIN` to a separate executable, also checked for version 0.35.0:
 
 ```sh
+python -m pip install apm-cli==0.35.0
 python -m unittest discover -s tests -v
 ```
+
+The installation checks isolate APM's home, configuration, cache and temporary state. Version/path regressions use the running Python's APM module; a mismatched or missing module fails with installation instructions. Ordinary package discovery does not invoke models.
+
+### Optional native smoke checks
+
+With stock APM and an authenticated Codex CLI supporting native custom agents, prepare a disposable fixture, then explicitly run one parent turn:
+
+```sh
+python tests/smoke/check_driver.py
+python tests/smoke/run.py planning --output-dir .tmp/smoke/planning --prepare-only
+python tests/smoke/run.py planning --output-dir .tmp/smoke/planning --resume
+```
+
+Set `APM_BIN` if needed. `resume-correction`, `missing-reviewer` and `missing-context` are targeted boundary cases with deliberate behavior instructions. `planning`, `clarify-scope` and `write-spec` use ordinary skill requests containing product facts and a project directory, with no preapproved records, reviewer or gate reminders. Existing consumer authentication/model settings are retained; runs request workspace-write and use the normal package installation. `--prepare-only` never calls a model.
+
+Inspect each turn before supplying its next input. After assessment, use `--resume --reply-file PATH`; the driver targets the recorded parent ID. A successful process stays `pending-assessment`, rather than declaring a behavioral pass. Cases allow at most eight parent turns of 1,200 seconds; failed/incomplete attempts cannot automatically continue or overwrite evidence. Retain failed results and allow at most one justified repeat per case.
+
+| Case | External assessment and next input |
+| --- | --- |
+| `planning` | Approve research, scope, reviewed specification and reviewed local plan separately with normal `Approved.` replies. Check both fresh native reviewers/context, all four stage stops, final handoff and preservation without implementation/publication. |
+| `clarify-scope` | Answer default five data rows and preservation of unused iterator rows; reject booleans/non-integer limits. Check pending choices stay unapproved until answered, then agreed scope without a reviewer/full workflow or implementation. Local scope records are permitted by the current helper. |
+| `write-spec` | Agreed facts are supplied in the request. Check spec/ACs/planned checks, no invented review/final approval and no reviewer/full workflow. |
+| `resume-correction` | Check original IDs/approvals/evidence and legacy content, material findings and correction verification by the same child. The targeted request stops at specification approval; it does not test the remaining plan stage. |
+| `missing-reviewer`, `missing-context` | Check an explicitly incomplete review, without self-review, substitution, context repair or invented approval. |
+
+These expectations stay outside ordinary consumer prompts. Needing to teach a workflow rule makes that ordinary case failed/incomplete; product-fact answers are allowed. Local ignored output records exact package/driver/selected-fixture hashes, pristine and intentionally perturbed installations, strict non-task inventories, effective settings and own parent/child calls/results without reasoning or inherited history. Keep original execution and later collector hashes distinct when re-extracting evidence. Missing native context/evidence remains incomplete. These opt-in checks stay separate from credential-free packaging CI; compatibility and performance claims require their own evidence.
+
+On 2026-11-02, all six cases were assessed on Windows with Codex CLI 0.166.0-alpha.5.1 and inherited `gpt-6.1-sol`/high settings, workspace-write and no network. Package-input digest: `370857eb0c6b668ab6269e936a3a55ffeac610d8671846e3723a214cf2848a14` (SHA256 of the manifest's sorted compact JSON package-hash map). Ordinary planning completed in five parent turns with four plain approvals and two fresh native reviewers whose own context reads were inspected. Helpers stayed within scope; targeted correction reused its reviewer, and missing prerequisites left review incomplete. Strict inventories preserved all 43 non-task files per ordinary/correction case and 42 per missing-prerequisite case. Eight package tests and five driver guards passed with Python 3.11.9/APM 0.35.0. Native fixture Python probes were unavailable, so preview runtime checks remain unexecuted. Host guidance/memory was readable: these are supervised existing-profile observations, not a clean-room comparison or performance benchmark.
 
 See [contribution guidance](CONTRIBUTING.md) for changes and validation.
 
