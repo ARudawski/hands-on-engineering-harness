@@ -1,6 +1,6 @@
 name: hands-on-engineering-harness
 version: 0.1.0
-description: Concise planning workflows with independent review for Codex and Claude Code.
+description: Concise planning and delivery workflows with independent review for Codex and Claude Code.
 author: ARudawski
 targets:
   - codex
