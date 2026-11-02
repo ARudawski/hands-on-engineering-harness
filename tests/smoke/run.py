@@ -1,14 +1,15 @@
 """Opt-in native smoke checks. Process success is not a behavioral assessment."""
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import tomllib
 from uuid import UUID, uuid4
 
@@ -36,6 +37,14 @@ def inventory(directory, exclude=()):
         if path.is_file():
             result[relative.as_posix()] = digest(path)
     return result
+
+
+def fixture_changes(before, after):
+    added = after.keys() - before.keys()
+    bytecode = {p: after[p] for p in sorted(added) if "__pycache__" in Path(p).parts and Path(p).suffix == ".pyc"}
+    return {"added": sorted(added - bytecode.keys()), "deleted": sorted(before.keys() - after.keys()),
+            "modified": sorted(p for p in before.keys() & after.keys() if before[p] != after[p]),
+            "generated_bytecode": bytecode}
 
 
 def inputs(case):
@@ -98,7 +107,6 @@ def prepare(case, out):
         write(".tmp/csv-preview/evidence.md", "# E-17\nObserved export_csv writes every row into StringIO. No runtime checks were run.\n")
         index = (FIXTURES / "legacy-index.md").read_text(encoding="utf-8") if case == "resume-correction" else "- [Task specification](spec.md) — Draft and task state.\n- [Evidence E-17](evidence.md) — Source observation.\n"
         write(".tmp/csv-preview/index.md", index)
-    subprocess.run(["git", "init", "-b", "main"], cwd=consumer, capture_output=True, check=True, timeout=120)
     env = isolated_apm_env(out / "apm-state")
     apm = os.environ.get("APM_BIN") or shutil.which("apm")
     if apm and Path(apm).is_file():
@@ -120,7 +128,7 @@ def prepare(case, out):
     guidance = (source / ".apm/instructions/harness.instructions.md").read_text(encoding="utf-8").split("---", 2)[2].strip()
     if guidance not in (consumer / "AGENTS.md").read_text(encoding="utf-8"):
         raise RuntimeError("Compiled guidance differs from candidate.")
-    if case not in ORDINARY and (consumer / ".tmp/csv-preview/../../docs/export-contract.md").resolve() != consumer / "docs/export-contract.md":
+    if not (consumer / "docs/export-contract.md").is_file():
         raise RuntimeError("Fixture baseline link is invalid.")
     manifest["pristine_installed"] = installed_hashes(consumer)
     for path in ({"missing-reviewer": [".codex/agents/plan-reviewer.toml"], "missing-context": ["docs/export-contract.md"]}.get(case, [])):
@@ -133,12 +141,13 @@ def prepare(case, out):
     return manifest
 
 
+def session_root():
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
+
+
 def session_file(session_id):
-    day = datetime.fromtimestamp((UUID(session_id).int >> 80) / 1000, timezone.utc).strftime("%Y/%m/%d")
-    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-    matches = list((home / "sessions" / day).glob(f"*{session_id}.jsonl"))
-    if not matches:
-        matches = list((home / "sessions").rglob(f"*{session_id}.jsonl"))
+    UUID(session_id)
+    matches = list(session_root().rglob(f"*{session_id}.jsonl"))
     if len(matches) != 1:
         raise RuntimeError(f"Native session evidence unavailable for {session_id}")
     return matches[0]
@@ -147,43 +156,64 @@ def session_file(session_id):
 def native_evidence(session_id):
     parent = session_file(session_id)
     paths = [parent]
-    for path in sorted(parent.parent.glob("*.jsonl")):
-        with path.open(encoding="utf-8") as handle:
-            first = handle.readline()
-        if not first.strip():
+    for path in sorted(session_root().rglob("*.jsonl")):
+        if path == parent:
             continue
-        meta = json.loads(first)["payload"]
-        source = meta.get("source")
-        if isinstance(source, dict) and source.get("subagent", {}).get("thread_spawn", {}).get("parent_thread_id") == session_id:
+        try:
+            with path.open(encoding="utf-8") as handle:
+                meta = json.loads(handle.readline())
+        except (OSError, ValueError):
+            continue  # Unrelated sessions may be empty or still being written.
+        if not isinstance(meta, dict) or meta.get("type") != "session_meta":
+            continue
+        value = meta.get("payload")
+        for key in ("source", "subagent", "thread_spawn", "parent_thread_id"):
+            value = value.get(key) if isinstance(value, dict) else None
+        if value == session_id:
             paths.append(path)
     records = []
     for path in paths:
         record = {"path": str(path), "actions": [], "tool_records": [], "settings": []}
         with path.open(encoding="utf-8") as handle:
-            meta = json.loads(next(handle))["payload"]
+            header = json.loads(handle.readline())
+            if not isinstance(header, dict) or header.get("type") != "session_meta" or not isinstance(header.get("payload"), dict):
+                raise RuntimeError(f"Invalid native session metadata: {path}")
+            meta = header["payload"]
+            if not isinstance(meta.get("id"), str):
+                raise RuntimeError(f"Missing native session identity: {path}")
+            if path == parent and meta["id"] != session_id:
+                raise RuntimeError(f"Native parent identity mismatch: {path}")
             record["id"], record["source"] = meta["id"], meta.get("source")
-            events = [json.loads(line) for line in handle]
+            events = [json.loads(line) for line in handle if line.strip()]
+            if any(not isinstance(e, dict) or not isinstance(e.get("payload"), dict) or not isinstance(e.get("type"), str) for e in events):
+                raise RuntimeError(f"Invalid native session event: {path}")
             own_turns = {event["payload"]["turn_id"] for event in events
-                         if event["type"] == "event_msg" and event["payload"].get("turn_id")
+                         if event["type"] == "event_msg" and isinstance(event["payload"].get("turn_id"), str)
                          and event["payload"].get("thread_id") == record["id"]}
             current_turn, calls = None, {}
             for event in events:
                 payload = event.get("payload", {})
+                if event["type"] == "turn_context" and not isinstance(payload.get("turn_id"), str):
+                    raise RuntimeError(f"Invalid native turn identity: {path}")
                 if event["type"] == "turn_context" or event["type"] == "event_msg" and payload.get("type") == "task_started":
-                    current_turn = payload.get("turn_id")
+                    current_turn = payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None
                 kind = payload.get("type")
+                if kind is not None and not isinstance(kind, str):
+                    raise RuntimeError(f"Invalid native payload type: {path}")
                 if event["type"] == "response_item":
-                    if kind in {"function_call", "custom_tool_call"} and current_turn in own_turns:
+                    if kind in {"function_call", "custom_tool_call"} and current_turn in own_turns and isinstance(payload.get("call_id"), str):
                         calls[payload["call_id"]] = current_turn
                     if (kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
-                            and payload.get("call_id") in calls):
+                            and isinstance(payload.get("call_id"), str) and payload["call_id"] in calls):
                         record["tool_records"].append({"turn_id": calls[payload["call_id"]], "payload": {
                             k: payload[k] for k in ("type", "id", "call_id", "name", "namespace", "arguments", "input", "output") if k in payload}})
-                if event["type"] == "turn_context" and payload.get("turn_id") in own_turns:
+                if event["type"] == "turn_context" and current_turn in own_turns:
                     record["settings"].append({k: payload[k] for k in ("model", "effort", "approval_policy", "sandbox_policy", "cwd") if k in payload})
                 if event["type"] == "event_msg" and payload.get("type") == "item_completed" and payload.get("thread_id") == record.get("id"):
-                    item = payload["item"]
-                    if item.get("type", "").lower() not in {"reasoning", "usermessage"}:
+                    item = payload.get("item")
+                    if not isinstance(item, dict):
+                        raise RuntimeError(f"Invalid native completed item: {path}")
+                    if str(item.get("type", "")).lower() not in {"reasoning", "usermessage"}:
                         record["actions"].append({"turn_id": payload.get("turn_id"), "item": item})
         records.append(record)
     return records
@@ -194,8 +224,10 @@ def validate_resume(case, out, manifest):
         raise ValueError("Run identity or candidate/driver/fixture hashes changed.")
     if installed_hashes(out / "consumer") != manifest["runtime_installed"]:
         raise ValueError("Installed inputs changed; do not reinstall into an active run.")
-    if "baseline" in manifest and inventory(out / "consumer", (".git", ".tmp")) != manifest["baseline"]:
-        raise ValueError("Non-task fixture files changed before continuation.")
+    if "baseline" in manifest:
+        changes = fixture_changes(manifest["baseline"], inventory(out / "consumer", (".git", ".tmp")))
+        if any(changes[k] for k in ("added", "deleted", "modified")):
+            raise ValueError(f"Non-task fixture files changed before continuation: {changes}")
     if manifest["status"] not in {"prepared", "pending-assessment"}:
         raise ValueError("Failed/incomplete runs need investigation, not automatic continuation.")
     if manifest["turns"]:
@@ -203,11 +235,71 @@ def validate_resume(case, out, manifest):
         if ids != {manifest["session_id"]} or not manifest["session_id"]:
             raise ValueError("Parent session identity mismatch.")
         with session_file(manifest["session_id"]).open(encoding="utf-8") as handle:
-            meta = json.loads(next(handle))["payload"]
-        if meta["id"] != manifest["session_id"] or Path(meta["cwd"]).resolve() != out / "consumer":
+            header = json.loads(handle.readline())
+        meta = header.get("payload") if isinstance(header, dict) else None
+        if not isinstance(meta, dict) or meta.get("id") != manifest["session_id"] or not isinstance(meta.get("cwd"), str) or Path(meta["cwd"]).resolve() != out / "consumer":
             raise ValueError("Native parent identity/workspace mismatch.")
     if len(manifest["turns"]) >= 8:
         raise ValueError("Eight-turn scenario budget exhausted.")
+
+
+def run_turn(command, prompt, cwd, timeout=1200):
+    # Files avoid communicate() waiting on pipes inherited by descendants.
+    with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        stdin.write(prompt.encode("utf-8"))
+        stdin.seek(0)
+        options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).resolve().parent)}
+        process = subprocess.Popen(command, stdin=stdin, stdout=stdout, stderr=stderr, cwd=cwd, env=env, **options)
+        try:
+            process.wait(timeout=timeout)
+        except BaseException as error:
+            try:
+                if os.name == "nt":
+                    result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                    if result.returncode and process.poll() is None:
+                        raise RuntimeError("Could not terminate native process tree.")
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+            stdout.seek(0)
+            stderr.seek(0)
+            if isinstance(error, subprocess.TimeoutExpired):
+                error.output = stdout.read().decode("utf-8", "replace")
+                error.stderr = stderr.read().decode("utf-8", "replace")
+            raise
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(command, process.returncode, stdout.read().decode("utf-8", "replace"), stderr.read().decode("utf-8", "replace"))
+
+
+def parse_events(output):
+    events, notes, errors = [], 0, []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            if line.lstrip().startswith(("{", "[")):
+                errors.append("Truncated or malformed CLI event; later valid events retained.")
+            else:
+                notes += 1
+            continue
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str) or ("item" in event and not isinstance(event["item"], dict)):
+            errors.append("Invalid CLI event shape; later valid events retained.")
+            continue
+        item = event.get("item", {})
+        if str(item.get("type", "")).lower() != "reasoning":
+            events.append(event)
+    return events, notes, errors
 
 
 def execute(out, manifest, reply=None):
@@ -224,7 +316,7 @@ def execute(out, manifest, reply=None):
     command = [codex, "exec", "-C", str(consumer), "--sandbox", "workspace-write"]
     if manifest["session_id"]:
         command += ["resume", manifest["session_id"]]
-    command += ["--json", "-o", str(prefix.with_suffix(".last.md")), "-"]
+    command += ["--skip-git-repo-check", "--json", "-o", str(prefix.with_suffix(".last.md")), "-"]
     if not manifest["turns"]:
         manifest["codex_version"] = subprocess.check_output([codex, "--version"], text=True, stderr=subprocess.DEVNULL, timeout=30).strip()
     turn = {"number": number, "session_id": manifest["session_id"], "exit_code": None,
@@ -237,26 +329,18 @@ def execute(out, manifest, reply=None):
         with prefix.with_suffix(".prompt.txt").open("x", encoding="utf-8") as handle:
             handle.write(prompt)
         try:
-            result = subprocess.run(command, input=prompt, cwd=consumer, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1200)
+            result = run_turn(command, prompt, consumer)
             output, stderr, code = result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired as error:
             output, stderr, code = error.stdout or b"", error.stderr or b"", None
             output = output.decode("utf-8", "replace") if isinstance(output, bytes) else output
             stderr = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else stderr
+            manifest["failure"] = "Native turn timed out; process-tree cleanup attempted."
         prefix.with_suffix(".stderr.log").write_text(stderr, encoding="utf-8")
-        events, parse_error = [], None
-        for line in output.splitlines():
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except ValueError:
-                parse_error = "Truncated or malformed CLI event; partial valid events retained."
-                break
-            if event.get("item", {}).get("type", "").lower() != "reasoning":
-                events.append(event)
+        events, notes, parse_errors = parse_events(output)
+        manifest["stdout_non_json_lines"] = notes
         write_json(prefix.with_suffix(".events.json"), events)
-        ids = {e["thread_id"] for e in events if e.get("type") == "thread.started"}
+        ids = {e["thread_id"] for e in events if e.get("type") == "thread.started" and isinstance(e.get("thread_id"), str)}
         expected = manifest["session_id"]
         turn["identity_ok"] = len(ids) == 1 and (expected is None or ids == {expected})
         if turn["identity_ok"]:
@@ -264,11 +348,16 @@ def execute(out, manifest, reply=None):
         turn.update(session_id=manifest["session_id"], exit_code=code,
                     completed=any(e.get("type") == "turn.completed" for e in events))
         manifest["after"] = inventory(consumer, (".git", ".tmp"))
-        manifest["preserved"] = manifest["after"] == manifest["baseline"]
-        if parse_error:
-            manifest["failure"] = parse_error
+        manifest["fixture_changes"] = fixture_changes(manifest["baseline"], manifest["after"])
+        manifest["preserved"] = not any(manifest["fixture_changes"][k] for k in ("added", "deleted", "modified"))
+        if not manifest["preserved"]:
+            manifest["failure"] = "Non-task fixture files changed; see fixture_changes."
+        if parse_errors:
+            manifest["failure"] = " ".join(sorted(set(parse_errors)))
         elif code == 0 and turn["completed"] and turn["identity_ok"] and manifest["preserved"]:
             manifest["status"] = "pending-assessment"
+        elif "failure" not in manifest:
+            manifest["failure"] = "Native turn failed, did not complete, or returned an unexpected parent identity."
         if manifest["session_id"]:
             try:
                 write_json(prefix.with_suffix(".native.json"), native_evidence(manifest["session_id"]))

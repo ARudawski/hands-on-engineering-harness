@@ -277,11 +277,12 @@ class FixtureTests(unittest.TestCase):
 
 class ApmSupportTests(unittest.TestCase):
     def test_isolated_user_state(self):
-        prerequisite = "State-path checks require apm-cli==0.35.0 in this Python; run python -m pip install apm-cli==0.35.0."
+        prerequisite = "State-path probe skipped: install apm-cli==0.35.0 in this Python to enable it; APM_BIN installation/version checks still run."
         try:
-            self.assertEqual(version("apm-cli"), "0.35.0", prerequisite)
+            if version("apm-cli") != "0.35.0":
+                self.skipTest(prerequisite)
         except PackageNotFoundError:
-            self.fail(prerequisite)
+            self.skipTest(prerequisite)
         with tempfile.TemporaryDirectory(prefix="harness-isolation-") as directory:
             root = Path(directory)
             parent = root / "parent"
@@ -325,6 +326,19 @@ print(json.dumps({'home': str(Path.home()), 'config': config.CONFIG_FILE,
             self.assertNotEqual(observed["settings"].get("install_target"), "parent-sentinel")
             after = {p.relative_to(parent): p.read_bytes() for p in parent.rglob("*") if p.is_file()}
             self.assertEqual(after, before)
+
+    def test_state_probe_prerequisites(self):
+        for response in ("0.36.0", PackageNotFoundError("apm-cli")):
+            with self.subTest(response=str(response)), patch.object(sys.modules[__name__], "version") as lookup:
+                if isinstance(response, Exception):
+                    lookup.side_effect = response
+                else:
+                    lookup.return_value = response
+                result = unittest.TestResult()
+                ApmSupportTests("test_isolated_user_state").run(result)
+                self.assertEqual(len(result.skipped), 1)
+                self.assertIn("APM_BIN installation/version checks still run", result.skipped[0][1])
+                self.assertFalse(result.errors or result.failures)
 
     def test_version_response_validation(self):
         banner = "Agent Package Manager (APM) CLI version "
