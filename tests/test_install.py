@@ -15,6 +15,8 @@ import yaml
 
 
 SOURCE = Path(__file__).resolve().parents[1]
+SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "implement-slice", "review-code"}
+AGENTS = ("plan-reviewer", "code-reviewer")
 
 
 class InstallTests(unittest.TestCase):
@@ -51,6 +53,7 @@ class InstallTests(unittest.TestCase):
         return result
 
     def test_install_repeat_update(self):
+        self.assertEqual({p.parent.name for p in (SOURCE / ".apm/skills").glob("*/SKILL.md")}, SKILLS)
         consumer = self.consumer
         unrelated = {
             "consumer-settings.json": '{"keep": true}\n',
@@ -75,23 +78,26 @@ class InstallTests(unittest.TestCase):
                 for target in (".agents", ".claude"):
                     actual = consumer / target / "skills" / source.relative_to(SOURCE / ".apm/skills")
                     self.assertEqual(actual.read_bytes(), source.read_bytes())
-        agent_source = (SOURCE / ".apm/agents/plan-reviewer.agent.md").read_text(encoding="utf-8")
-        _, header, body = agent_source.split("---", 2)
-        metadata = yaml.safe_load(header)
-        native = tomllib.loads((consumer / ".codex/agents/plan-reviewer.toml").read_text(encoding="utf-8"))
-        self.assertEqual(native["name"], metadata["name"])
-        self.assertEqual(native["description"], metadata["description"])
-        self.assertEqual(native["developer_instructions"], body.strip())
-        for key in ("model", "model_reasoning_effort", "tools"):
-            self.assertNotIn(key, native)
+        self.assertEqual({p.name for p in (SOURCE / ".apm/agents").glob("*.agent.md")}, {f"{name}.agent.md" for name in AGENTS})
+        for name in AGENTS:
+            agent_source = (SOURCE / f".apm/agents/{name}.agent.md").read_text(encoding="utf-8")
+            _, header, body = agent_source.split("---", 2)
+            metadata = yaml.safe_load(header)
+            native = tomllib.loads((consumer / f".codex/agents/{name}.toml").read_text(encoding="utf-8"))
+            self.assertEqual(native["name"], metadata["name"])
+            self.assertEqual(native["description"], metadata["description"])
+            self.assertEqual(native["developer_instructions"], body.strip())
+            for key in ("model", "model_reasoning_effort", "tools"):
+                self.assertNotIn(key, native)
+            self.assertEqual((consumer / f".claude/agents/{name}.md").read_bytes(), agent_source.encode("utf-8"))
         self.assertIn("'tools'", installed.stdout + installed.stderr)
-        self.assertEqual((consumer / ".claude/agents/plan-reviewer.md").read_bytes(), agent_source.encode("utf-8"))
         _, _, instruction = (SOURCE / ".apm/instructions/harness.instructions.md").read_text(encoding="utf-8").split("---", 2)
         for path in (".claude/rules/harness.md", "AGENTS.md"):
             self.assertIn(instruction.strip(), (consumer / path).read_text(encoding="utf-8"))
 
         native_paths = [*(p for target in (".agents", ".claude") for p in (consumer / target / "skills").rglob("*") if p.is_file()),
-                        consumer / ".codex/agents/plan-reviewer.toml", consumer / ".claude/agents/plan-reviewer.md",
+                        *(consumer / f".codex/agents/{name}.toml" for name in AGENTS),
+                        *(consumer / f".claude/agents/{name}.md" for name in AGENTS),
                         consumer / ".claude/rules/harness.md"]
         before = {path: path.read_bytes() for path in native_paths}
         self.run_apm("install", "--only", "apm")
@@ -105,11 +111,12 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn("Consumer edit sentinel", (consumer / "AGENTS.md").read_text(encoding="utf-8"))
 
         skills = [consumer / target / "skills/clarify-scope/SKILL.md" for target in (".agents", ".claude")]
-        replaced = [consumer / ".codex/agents/plan-reviewer.toml", consumer / ".claude/agents/plan-reviewer.md", consumer / ".claude/rules/harness.md"]
+        replaced = [*(consumer / f".codex/agents/{name}.toml" for name in AGENTS),
+                    *(consumer / f".claude/agents/{name}.md" for name in AGENTS), consumer / ".claude/rules/harness.md"]
         for path in skills + replaced:
             with path.open("a", encoding="utf-8") as file:
                 file.write("\n# Consumer edit sentinel\n")
-        for path in ("skills/write-spec/SKILL.md", "agents/plan-reviewer.agent.md", "instructions/harness.instructions.md"):
+        for path in ("skills/write-spec/SKILL.md", *(f"agents/{name}.agent.md" for name in AGENTS), "instructions/harness.instructions.md"):
             with (self.package / ".apm" / path).open("a", encoding="utf-8") as file:
                 file.write("\nPackage update sentinel.\n")
         updated = self.run_apm("install", "--only", "apm")
@@ -131,8 +138,8 @@ class InstallTests(unittest.TestCase):
         cases = {
             "skills": {f"{target}/skills/clarify-scope/SKILL.md": "# Consumer skill\n" for target in (".agents", ".claude")},
             "agents-and-rule": {
-                ".codex/agents/plan-reviewer.toml": 'name = "plan-reviewer"\ndescription = "Consumer reviewer"\ndeveloper_instructions = "Inspect only"\n',
-                ".claude/agents/plan-reviewer.md": "---\nname: plan-reviewer\ndescription: Consumer reviewer\n---\nInspect only.\n",
+                **{f".codex/agents/{name}.toml": f'name = "{name}"\ndescription = "Consumer reviewer"\ndeveloper_instructions = "Inspect only"\n' for name in AGENTS},
+                **{f".claude/agents/{name}.md": f"---\nname: {name}\ndescription: Consumer reviewer\n---\nInspect only.\n" for name in AGENTS},
                 ".claude/rules/harness.md": "# Consumer rule\n",
             },
         }
