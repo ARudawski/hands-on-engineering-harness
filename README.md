@@ -8,16 +8,18 @@ After installation, a local project directory and native client tools are enough
 
 ## Install
 
-Use stock APM 0.35.0 and a client supporting project skills/custom agents. Replace `REF` with a reviewed full commit SHA. See the tested support below.
+Use stock APM 0.35.0 and a client supporting project skills/custom agents. Install from `main` by default. See the tested support below.
 
 ```sh
 # Codex
-apm install ARudawski/hands-on-engineering-harness#REF --target codex
+apm install ARudawski/hands-on-engineering-harness#main --target codex
 apm compile --target codex
 
 # Claude Code
-apm install ARudawski/hands-on-engineering-harness#REF --target claude
+apm install ARudawski/hands-on-engineering-harness#main --target claude
 ```
+
+For an intentionally fixed revision, optionally replace `#main` with `#<full-commit-SHA>`. APM records the resolved commit in `apm.lock.yaml`, including when installing from a branch.
 
 APM installs skills to `.agents/skills/` (Codex) or `.claude/skills/` (Claude), with native reviewer definitions and guidance. With version control, ignore `.tmp/`. Existing project/module guidance remains authoritative.
 
