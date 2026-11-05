@@ -120,6 +120,12 @@ On 2026-11-02, all six cases were assessed on Windows with Codex CLI 0.166.0-alp
 
 See [contribution guidance](CONTRIBUTING.md) for changes and validation.
 
+Isolated evaluator feasibility tooling is documented in
+[tests/evaluation](tests/evaluation/README.md). It uses full pinned repository
+installations and explicit worker/native containment gates, separately from the
+reduced smoke fixtures above. Docker/model execution is opt-in; ordinary package
+and driver CI remains credential-free.
+
 ## License
 
 New content uses the [MIT License](LICENSE); see [third-party notices](THIRD-PARTY-NOTICES.md).

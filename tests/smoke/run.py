@@ -6,37 +6,19 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
 import tomllib
 from uuid import UUID, uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apm_support import isolated_apm_env, require_apm_version
+from native_support import digest, inventory, run_turn
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PROMPTS = json.loads((FIXTURES / "prompts.json").read_text(encoding="utf-8"))
 ORDINARY = {"planning", "clarify-scope", "write-spec"}
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def inventory(directory, exclude=()):
-    result = {}
-    for path in sorted(directory.rglob("*")):
-        relative = path.relative_to(directory)
-        if any(part in exclude for part in relative.parts):
-            continue
-        if path.is_symlink():
-            raise RuntimeError(f"Unexpected symlink in evidence inventory: {path}")
-        if path.is_file():
-            result[relative.as_posix()] = digest(path)
-    return result
 
 
 def fixture_changes(before, after):
@@ -105,7 +87,7 @@ def prepare(case, out):
     if case not in ORDINARY:
         write(".tmp/csv-preview/spec.md", (FIXTURES / "draft.md").read_text(encoding="utf-8"))
         write(".tmp/csv-preview/evidence.md", "# E-17\nObserved export_csv writes every row into StringIO. No runtime checks were run.\n")
-        index = (FIXTURES / "legacy-index.md").read_text(encoding="utf-8") if case == "resume-correction" else "- [Task specification](spec.md) — Draft and task state.\n- [Evidence E-17](evidence.md) — Source observation.\n"
+        index = (FIXTURES / "legacy-index.md").read_text(encoding="utf-8") if case == "resume-correction" else "- [Task specification](spec.md) â€” Draft and task state.\n- [Evidence E-17](evidence.md) â€” Source observation.\n"
         write(".tmp/csv-preview/index.md", index)
     env = isolated_apm_env(out / "apm-state")
     apm = os.environ.get("APM_BIN") or shutil.which("apm")
@@ -241,43 +223,6 @@ def validate_resume(case, out, manifest):
             raise ValueError("Native parent identity/workspace mismatch.")
     if len(manifest["turns"]) >= 8:
         raise ValueError("Eight-turn scenario budget exhausted.")
-
-
-def run_turn(command, prompt, cwd, timeout=1200):
-    # Files avoid communicate() waiting on pipes inherited by descendants.
-    with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        stdin.write(prompt.encode("utf-8"))
-        stdin.seek(0)
-        options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).resolve().parent)}
-        process = subprocess.Popen(command, stdin=stdin, stdout=stdout, stderr=stderr, cwd=cwd, env=env, **options)
-        try:
-            process.wait(timeout=timeout)
-        except BaseException as error:
-            try:
-                if os.name == "nt":
-                    result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-                    if result.returncode and process.poll() is None:
-                        raise RuntimeError("Could not terminate native process tree.")
-                else:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                process.wait(timeout=5)
-            stdout.seek(0)
-            stderr.seek(0)
-            if isinstance(error, subprocess.TimeoutExpired):
-                error.output = stdout.read().decode("utf-8", "replace")
-                error.stderr = stderr.read().decode("utf-8", "replace")
-            raise
-        stdout.seek(0)
-        stderr.seek(0)
-        return subprocess.CompletedProcess(command, process.returncode, stdout.read().decode("utf-8", "replace"), stderr.read().decode("utf-8", "replace"))
 
 
 def parse_events(output):
