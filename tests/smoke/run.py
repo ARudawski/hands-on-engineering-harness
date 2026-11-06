@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apm_support import isolated_apm_env, require_apm_version
-from native_support import digest, inventory, run_turn
+from native_support import collect_native_evidence, digest, inventory, run_turn
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -87,7 +87,7 @@ def prepare(case, out):
     if case not in ORDINARY:
         write(".tmp/csv-preview/spec.md", (FIXTURES / "draft.md").read_text(encoding="utf-8"))
         write(".tmp/csv-preview/evidence.md", "# E-17\nObserved export_csv writes every row into StringIO. No runtime checks were run.\n")
-        index = (FIXTURES / "legacy-index.md").read_text(encoding="utf-8") if case == "resume-correction" else "- [Task specification](spec.md) â€” Draft and task state.\n- [Evidence E-17](evidence.md) â€” Source observation.\n"
+        index = (FIXTURES / "legacy-index.md").read_text(encoding="utf-8") if case == "resume-correction" else "- [Task specification](spec.md) — Draft and task state.\n- [Evidence E-17](evidence.md) — Source observation.\n"
         write(".tmp/csv-preview/index.md", index)
     env = isolated_apm_env(out / "apm-state")
     apm = os.environ.get("APM_BIN") or shutil.which("apm")
@@ -136,69 +136,7 @@ def session_file(session_id):
 
 
 def native_evidence(session_id):
-    parent = session_file(session_id)
-    paths = [parent]
-    for path in sorted(session_root().rglob("*.jsonl")):
-        if path == parent:
-            continue
-        try:
-            with path.open(encoding="utf-8") as handle:
-                meta = json.loads(handle.readline())
-        except (OSError, ValueError):
-            continue  # Unrelated sessions may be empty or still being written.
-        if not isinstance(meta, dict) or meta.get("type") != "session_meta":
-            continue
-        value = meta.get("payload")
-        for key in ("source", "subagent", "thread_spawn", "parent_thread_id"):
-            value = value.get(key) if isinstance(value, dict) else None
-        if value == session_id:
-            paths.append(path)
-    records = []
-    for path in paths:
-        record = {"path": str(path), "actions": [], "tool_records": [], "settings": []}
-        with path.open(encoding="utf-8") as handle:
-            header = json.loads(handle.readline())
-            if not isinstance(header, dict) or header.get("type") != "session_meta" or not isinstance(header.get("payload"), dict):
-                raise RuntimeError(f"Invalid native session metadata: {path}")
-            meta = header["payload"]
-            if not isinstance(meta.get("id"), str):
-                raise RuntimeError(f"Missing native session identity: {path}")
-            if path == parent and meta["id"] != session_id:
-                raise RuntimeError(f"Native parent identity mismatch: {path}")
-            record["id"], record["source"] = meta["id"], meta.get("source")
-            events = [json.loads(line) for line in handle if line.strip()]
-            if any(not isinstance(e, dict) or not isinstance(e.get("payload"), dict) or not isinstance(e.get("type"), str) for e in events):
-                raise RuntimeError(f"Invalid native session event: {path}")
-            own_turns = {event["payload"]["turn_id"] for event in events
-                         if event["type"] == "event_msg" and isinstance(event["payload"].get("turn_id"), str)
-                         and event["payload"].get("thread_id") == record["id"]}
-            current_turn, calls = None, {}
-            for event in events:
-                payload = event.get("payload", {})
-                if event["type"] == "turn_context" and not isinstance(payload.get("turn_id"), str):
-                    raise RuntimeError(f"Invalid native turn identity: {path}")
-                if event["type"] == "turn_context" or event["type"] == "event_msg" and payload.get("type") == "task_started":
-                    current_turn = payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None
-                kind = payload.get("type")
-                if kind is not None and not isinstance(kind, str):
-                    raise RuntimeError(f"Invalid native payload type: {path}")
-                if event["type"] == "response_item":
-                    if kind in {"function_call", "custom_tool_call"} and current_turn in own_turns and isinstance(payload.get("call_id"), str):
-                        calls[payload["call_id"]] = current_turn
-                    if (kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
-                            and isinstance(payload.get("call_id"), str) and payload["call_id"] in calls):
-                        record["tool_records"].append({"turn_id": calls[payload["call_id"]], "payload": {
-                            k: payload[k] for k in ("type", "id", "call_id", "name", "namespace", "arguments", "input", "output") if k in payload}})
-                if event["type"] == "turn_context" and current_turn in own_turns:
-                    record["settings"].append({k: payload[k] for k in ("model", "effort", "approval_policy", "sandbox_policy", "cwd") if k in payload})
-                if event["type"] == "event_msg" and payload.get("type") == "item_completed" and payload.get("thread_id") == record.get("id"):
-                    item = payload.get("item")
-                    if not isinstance(item, dict):
-                        raise RuntimeError(f"Invalid native completed item: {path}")
-                    if str(item.get("type", "")).lower() not in {"reasoning", "usermessage"}:
-                        record["actions"].append({"turn_id": payload.get("turn_id"), "item": item})
-        records.append(record)
-    return records
+    return collect_native_evidence(session_id, session_root(), session_file(session_id))
 
 
 def validate_resume(case, out, manifest):

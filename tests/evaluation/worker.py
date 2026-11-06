@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tomllib
+import time
 
 from apm_support import isolated_apm_env, require_apm_version
 from native_support import digest, inventory
@@ -17,6 +18,8 @@ from native_support import digest, inventory
 
 def install(inputs):
     Path('/home/agent/.codex').mkdir(exist_ok=True)
+    # Fresh trial setup, not a rewrite of any existing consumer configuration.
+    Path('/home/agent/.codex/config.toml').write_text('[projects."/work/codex"]\ntrust_level = "trusted"\n')
     env = isolated_apm_env('/home/agent/apm-state')
     require_apm_version('/usr/local/bin/apm', env, '/work')
     result = {}
@@ -56,10 +59,23 @@ def install(inputs):
         guidance = (source / '.apm/instructions/harness.instructions.md').read_text().split('---', 2)[2].strip()
         if guidance not in (consumer / ('AGENTS.md' if target == 'codex' else '.claude/rules/harness.md')).read_text():
             raise RuntimeError('Guidance missing')
-        result[target] = {'commands': logs, 'files': inventory(consumer), 'source_files': source_files}
+        result[target] = {'commands': logs, 'files': inventory(consumer, root_exclude=('.tmp',)), 'source_files': source_files}
     result['versions'] = {name: subprocess.check_output(command, text=True, timeout=15).strip() for name, command in {
         'codex': ['codex', '--version'], 'python': ['python', '--version'], 'git': ['git', '--version'], 'apm': ['apm', '--version'],
     }.items()}
+    result['runtime_config_sha256'] = digest(Path('/home/agent/.codex/config.toml'))
+    fixture = Path('/work/codex/.tmp/native-foundation')
+    fixture.mkdir(parents=True)
+    files = {
+        'contract.md': '# Approved probe scope\nThe total(values) function returns the mathematical sum of supplied integers. Example: [2, 3] => 5. Empty => 0. No implementation or project test execution is authorized during reviews.\n',
+        'before.py': 'def total(values):\n    return sum(values)\n',
+        'after.py': 'def total(values):\n    return sum(values) + 1\n',
+        'plan.md': '# Exact plan to review\nScope: restore total(values) to mathematical sum; preserve integer inputs and empty behavior. AC1: [2,3] => 5; AC2: [] => 0. Increment P1 changes the shared aggregation contract. Dependent P2 updates its caller tests to that exact contract. Check both examples and caller integration. No implementation is authorized by this planning assessment.\n',
+    }
+    for name, content in files.items():
+        (fixture / name).write_text(content)
+    result['fixture_hashes'] = {name: digest(fixture / name) for name in files}
+    result['fixture_revision'] = 'native-foundation-v2'
     return result
 
 
@@ -125,7 +141,7 @@ def preflight(inputs):
 
 
 def relay_checks(inputs):
-    base = {'model': inputs['model'], 'reasoning': {'effort': inputs['effort']}, 'store': False, 'stream': True, 'input': []}
+    base = {'model': inputs['model'], 'reasoning': {'effort': inputs['effort'], 'context': 'all_turns'}, 'store': False, 'stream': True, 'input': []}
     cases = {'closed': (base, 'admission closed'), 'stored': ({**base, 'store': True}, 'only non-stored streaming responses'),
              'hosted': ({**base, 'tools': [{'type': 'web_search'}]}, 'hosted/unsupported tools'),
              'previous': ({**base, 'previous_response_id': 'unrelated'}, 'unsupported request fields'),
@@ -150,11 +166,28 @@ def relay_checks(inputs):
     return checks
 
 
+def runtime_state(_):
+    root = Path('/work/codex/.tmp/native-foundation')
+    return {'runtime_config_sha256': digest(Path('/home/agent/.codex/config.toml')),
+            'fixture_hashes': {n: digest(root / n) for n in ('contract.md', 'before.py', 'after.py', 'plan.md')}}
+
+
 if __name__ == '__main__':
     command = sys.argv[1]
+    if command in ('heartbeat', 'heartbeat-child'):
+        heartbeat = Path('/work/codex/.tmp/native-foundation/heartbeat')
+        if command == 'heartbeat':
+            subprocess.Popen([sys.executable, __file__, 'heartbeat-child'])
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if command == 'heartbeat-child':
+                heartbeat.write_text(str(time.time_ns()))
+            time.sleep(0.1)
+        sys.exit(0)
     values = json.loads(sys.argv[2]) if len(sys.argv) > 2 else json.load(sys.stdin)
     operations = {'install': install, 'preflight': preflight, 'relay-checks': relay_checks,
-                  'inventory': lambda _: {t: inventory(Path('/work') / t) for t in ('codex', 'claude')}}
+                  'runtime-state': runtime_state,
+                  'inventory': lambda _: {t: inventory(Path('/work') / t, root_exclude=('.tmp',)) for t in ('codex', 'claude')}}
     result = operations[command](values)
     print(json.dumps(result))
     if command in {'preflight', 'relay-checks'} and not all(result.values()):

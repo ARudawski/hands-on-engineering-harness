@@ -35,12 +35,20 @@ def local_tool(tool):
     return tool.get("type") in {"function", "custom"}
 
 
+def inline_text(value):
+    return isinstance(value, str) or isinstance(value, list) and all(
+        isinstance(c, dict) and c.get('type') in {'input_text', 'output_text'}
+        and not c.keys() - {'type', 'text', 'annotations', 'logprobs'} and isinstance(c.get('text'), str) for c in value)
+
+
 def validate(data, model, effort, trial):
     if not isinstance(data, dict) or data.keys() - ALLOWED:
         raise ValueError("unsupported request fields")
     reasoning = data.get("reasoning")
-    if not isinstance(reasoning, dict) or reasoning.keys() - {"effort", "summary"}:
+    if not isinstance(reasoning, dict) or reasoning.keys() - {"effort", "summary", "context"}:
         raise ValueError("unsupported reasoning settings")
+    if reasoning.get('context') != 'all_turns':
+        raise ValueError('reasoning context drift')
     if data.get("model") != model or reasoning.get("effort") != effort:
         raise ValueError("model/reasoning drift")
     if data.get("store") is not False or data.get("stream") is not True:
@@ -60,10 +68,24 @@ def validate(data, model, effort, trial):
         raise ValueError("expanded input required")
     for item in items:
         if not isinstance(item, dict) or item.get("type", "message") not in {
-            "message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning",
+            "message", "agent_message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning", "additional_tools",
         }:
             raise ValueError("stored/media input reference")
-        if item.get('type') in {'function_call_output', 'custom_tool_call_output'} and not isinstance(item.get('output'), str):
+        if item.get('type') == 'agent_message':
+            # Native local reviewer envelopes carry inline text and opaque
+            # inherited context, never a hosted conversation/resource handle.
+            if (item.keys() - {'type', 'id', 'author', 'recipient', 'content', 'internal_chat_message_metadata_passthrough'}
+                    or any(not isinstance(item.get(k), str) or not item[k].startswith('/root') for k in ('author', 'recipient'))
+                    or not isinstance(item.get('content'), list)
+                    or any(not isinstance(c, dict) or not (
+                        c.keys() == {'type', 'text'} and c.get('type') == 'input_text' and isinstance(c.get('text'), str)
+                        or c.keys() == {'type', 'encrypted_content'} and c.get('type') == 'encrypted_content' and isinstance(c.get('encrypted_content'), str)
+                    ) for c in item['content'])):
+                raise ValueError('unsupported local agent context')
+        if item.get('type') == 'additional_tools':
+            if item.keys() - {'type', 'id', 'role', 'tools'} or item.get('role') != 'developer' or not isinstance(item.get('tools'), list) or not all(local_tool(t) for t in item['tools']):
+                raise ValueError('hosted/unsupported additional tools')
+        if item.get('type') in {'function_call_output', 'custom_tool_call_output'} and not inline_text(item.get('output')):
             raise ValueError('only inline text tool output')
         if item.get("type", "message") == "message":
             content = item.get("content", [])
@@ -96,7 +118,7 @@ class Relay:
             raise RuntimeError("relay restart cannot reset retained quotas")
         self.lock = threading.RLock()
         self.stop = threading.Event()
-        self.connections = set()
+        self.connections = {}
         self.started = time.monotonic()
         self.meter = {"trial": trial, "requests": 0, "input_bytes": 0, "output_bytes": 0, "accepted": 0, "denied": 0, 'closed_reason': None}
         self.save()
@@ -122,10 +144,19 @@ class Relay:
         while not self.stop.is_set():
             if not self.armed():
                 with self.lock:
-                    for conn in list(self.connections):
-                        if conn.sock:
+                    for conn, active_socket in list(self.connections.items()):
+                        if active_socket is None:
+                            # DNS/connect/TLS/send can block before a controllable
+                            # socket is published. End this disposable relay so
+                            # no delayed setup can send after admission closes.
+                            self.meter['closed_reason'] = 'admission revoked during upstream setup'
+                            self.save()
+                            os._exit(70)
+                        # Keep the actual TLS socket even when getresponse()
+                        # detaches conn.sock for a Connection: close response.
+                        for active in {active_socket, conn.sock} - {None}:
                             try:
-                                conn.sock.shutdown(socket.SHUT_RDWR)
+                                active.shutdown(socket.SHUT_RDWR)
                             except OSError:
                                 pass
                         conn.close()
@@ -192,13 +223,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not relay.armed():
                     raise ValueError("admission closed")
                 conn = http.client.HTTPSConnection("api.openai.com", timeout=60)
-                relay.connections.add(conn)
+                relay.connections[conn] = None
                 relay.meter["accepted"] += 1
                 relay.save()
             conn.request("POST", "/v1/responses", json.dumps(data), {
                 "Authorization": "Bearer " + relay.credential,
                 "Content-Type": "application/json", "Accept": "text/event-stream", "Accept-Encoding": "identity",
             })
+            with relay.lock:
+                relay.connections[conn] = socket.socket(fileno=socket.dup(conn.sock.fileno())) if conn.sock else None
             response = conn.getresponse()
             if response.status != 200:
                 self.reply(502, {"error": "upstream rejected", "upstream_status": response.status})
@@ -231,7 +264,9 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             if conn:
                 with relay.lock:
-                    relay.connections.discard(conn)
+                    control_socket = relay.connections.pop(conn, None)
+                    if control_socket:
+                        control_socket.close()
                 conn.close()
 
 

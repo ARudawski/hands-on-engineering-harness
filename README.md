@@ -118,6 +118,18 @@ The six-case observations below used the original driver (SHA256 `204dab1d611326
 
 On 2026-11-02, all six cases were assessed on Windows with Codex CLI 0.166.0-alpha.5.1 and inherited `gpt-6.1-sol`/high settings, workspace-write and no network. Package-input digest: `370857eb0c6b668ab6269e936a3a55ffeac610d8671846e3723a214cf2848a14` (SHA256 of the manifest's sorted compact JSON package-hash map). Ordinary planning completed in five parent turns with four plain approvals and two fresh native reviewers whose own context reads were inspected. Helpers stayed within scope; targeted correction reused its reviewer, and missing prerequisites left review incomplete. Strict inventories preserved all 43 non-task files per ordinary/correction case and 42 per missing-prerequisite case. Eight package tests and five driver guards passed with Python 3.11.9/APM 0.35.0. Native fixture Python probes were unavailable, so preview runtime checks remain unexecuted. Host guidance/memory was readable: these are supervised existing-profile observations, not a clean-room comparison or performance benchmark.
 
+Initial isolated observations on 2026-11-06 used full baseline `900f496` and
+candidate `99c823a` installs for both targets, Docker Linux amd64 Engine 29.9.2,
+Codex 0.166.0-alpha.6 and `gpt-6-astra`/xhigh. Candidate probes observed a native
+question, exact-session resume, approved marker execution, a delivery-stage pause
+and both installed reviewer roles with their own context/actions. The native
+interrupt left a heartbeat descendant alive; the external watchdog stopped the
+owned worker. The corrected cleanup stopped an actual native heartbeat command
+and its descendant in 1.03 seconds with zero model requests, alongside model-free
+regression checks. A fresh complete paired native sequence remains **incomplete** after the provider returned
+`usageLimitExceeded`. These observations do not establish Claude execution,
+calibration, performance or complete evaluator acceptance.
+
 See [contribution guidance](CONTRIBUTING.md) for changes and validation.
 
 Isolated evaluator feasibility tooling is documented in

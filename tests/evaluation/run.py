@@ -9,13 +9,16 @@ import re
 import subprocess
 import socket
 import sys
+import tempfile
+import threading
 import time
 from uuid import uuid4
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from native_support import digest, inventory, run_turn
-from native import sandbox_gate
+from native_support import collect_native_evidence, digest, inventory, run_turn
+from native import Connection, public_event, remaining, sandbox_gate
+from probes import PROBES, run_turn as probe_turn
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -32,8 +35,9 @@ def write_json(path, value):
     tmp.replace(path)
 
 
-def command(args, stdin='', timeout=300, check=True):
-    p = run_turn(args, stdin, ROOT, timeout)
+def command(args, stdin='', timeout=300, check=True, deadline=None):
+    p = (subprocess.run(args, input=stdin, cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                        timeout=remaining(deadline, timeout)) if deadline is not None else run_turn(args, stdin, ROOT, timeout))
     if len(p.stdout) + len(p.stderr) > 4 * 1024 * 1024:
         raise RuntimeError('Subprocess output budget exceeded')
     if check and p.returncode:
@@ -41,8 +45,8 @@ def command(args, stdin='', timeout=300, check=True):
     return p
 
 
-def docker(*args, stdin='', timeout=300, check=True):
-    return command(['docker', *args], stdin, timeout, check)
+def docker(*args, stdin='', timeout=300, check=True, deadline=None):
+    return command(['docker', *args], stdin, timeout, check, deadline)
 
 
 def controller_inputs():
@@ -117,9 +121,9 @@ def load(out, validate_current=True):
     return out, manifest
 
 
-def owned(manifest, role):
+def owned(manifest, role, deadline=None):
     identity = manifest['resources'][role]
-    data = json.loads(docker('inspect', identity).stdout)[0]
+    data = json.loads(docker('inspect', identity, deadline=deadline).stdout)[0]
     if data['Id'] != identity or data['Config']['Labels'].get('har5.trial') != manifest['trial_id'] or data['Config']['Labels'].get('har5.role') != role:
         raise ValueError('Resource identity/ownership mismatch')
     return data
@@ -131,10 +135,10 @@ def safe_inspect(data):
     }
 
 
-def execute_worker(manifest, operation, data, role='worker', timeout=300):
-    owned(manifest, role)
+def execute_worker(manifest, operation, data, role='worker', timeout=300, deadline=None):
+    owned(manifest, role, deadline)
     p = docker('exec', '-i', manifest['resources'][role], 'python', '/opt/evaluation/worker.py', operation,
-               stdin=json.dumps(data), timeout=timeout)
+               stdin=json.dumps(data), timeout=timeout, deadline=deadline)
     return json.loads(p.stdout)
 
 
@@ -165,6 +169,8 @@ def prepare(out, config):
         persist()
         for role in ('work', 'home', 'relay-state', 'previous-work', 'previous-home'):
             volume = docker('volume', 'create', '--label', 'har5.trial=' + trial, trial + '-' + role).stdout.strip()
+            if json.loads(docker('volume', 'inspect', volume).stdout)[0]['Labels'].get('har5.trial') != trial:
+                raise ValueError('Existing/foreign volume cannot be adopted')
             manifest['resources'][role] = volume
             persist()
         common = ['--label', 'har5.trial=' + trial, '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
@@ -183,11 +189,14 @@ def prepare(out, config):
                 raise ValueError('Worker image helper input drift: ' + filename)
         revision = config[config['variant']]
         manifest['installation'] = execute_worker(manifest, 'install', {'revision': revision, 'source_files': source_files(revision)}, 'prepare', 900)
+        if manifest['installation']['fixture_revision'] != config['fixture_revision']:
+            raise ValueError('Actual image fixture revision differs from declared input')
         persist()
         docker('stop', '--time', '1', prep)
         worker = docker('create', '--name', trial + '-worker', '--label', 'har5.role=worker', *common, *volumes,
                         '--security-opt', 'seccomp=' + str(out / 'seccomp.json'),
-                        '--network', net, '--dns', '127.0.0.1', config['image_id']).stdout.strip()
+                        '--network', net, '--dns', '127.0.0.1', config['image_id'], 'python', '-c',
+                        'import time; time.sleep(7200)').stdout.strip()
         manifest['resources']['worker'] = worker
         persist()
         docker('start', worker)
@@ -237,6 +246,9 @@ def preflight(out, manifest):
     before = execute_worker(manifest, 'inventory', {})
     if any(before[t] != manifest['installation'][t]['files'] for t in ('codex', 'claude')):
         raise ValueError('Materialized/deployed installation changed')
+    runtime = execute_worker(manifest, 'runtime-state', {})
+    if any(runtime[k] != manifest['installation'][k] for k in ('runtime_config_sha256', 'fixture_hashes')):
+        raise ValueError('Runtime trust or fixed probe fixture changed')
     worker = manifest['deployment']['worker']
     if worker['user'] != '10001:10001' or worker['HostConfig']['Privileged'] or not worker['HostConfig']['ReadonlyRootfs']:
         raise ValueError('Unsupported worker privilege boundary')
@@ -281,18 +293,270 @@ def preflight(out, manifest):
     return manifest
 
 
+def check_runtime_state(manifest, deadline=None):
+    current = execute_worker(manifest, 'runtime-state', {}, deadline=deadline)
+    if any(current[k] != manifest['installation'][k] for k in ('runtime_config_sha256', 'fixture_hashes')):
+        raise ValueError('Runtime trust/configuration or fixed fixture changed')
+    installed = execute_worker(manifest, 'inventory', {}, deadline=deadline)
+    for target in ('codex', 'claude'):
+        if installed[target] != manifest['installation'][target]['files']:
+            raise ValueError('Immutable full installation changed')
+    for role in ('worker', 'relay'):
+        if safe_inspect(owned(manifest, role, deadline)) != manifest['deployment'][role]:
+            raise ValueError('Worker/relay deployment changed')
+
+
+def relay_control(manifest, expires, deadline=None):
+    owned(manifest, 'relay', deadline)
+    docker('exec', '-i', manifest['resources']['relay'], 'python', '-c',
+           "import pathlib,sys; p=pathlib.Path('/state/control.new'); p.write_text(sys.stdin.read()); p.replace('/state/control.json')",
+           stdin=json.dumps({'trial': manifest['trial_id'], 'expires': expires}), timeout=3, deadline=deadline)
+
+
+def heartbeat(manifest, deadline=None):
+    p = docker('exec', manifest['resources']['worker'], 'python', '-c',
+        "from pathlib import Path; p=Path('/work/codex/.tmp/native-foundation/heartbeat'); print(p.read_text() if p.exists() else '')", timeout=3, deadline=deadline)
+    return p.stdout.strip() or None
+
+
+def collect_session(manifest, out, number, deadline=None):
+    # Raw native history is read only in a controller-owned temporary directory;
+    # the retained export uses the same own-action/no-reasoning collector as smoke.
+    with tempfile.TemporaryDirectory(prefix='native-extract-', dir=out) as directory:
+        root = Path(directory).resolve()
+        if not root.is_relative_to(out.resolve()):
+            raise ValueError('Unexpected temporary evidence path')
+        docker('cp', manifest['resources']['worker'] + ':/home/agent/.codex/sessions', str(root / 'sessions'), deadline=deadline)
+        files = list((root / 'sessions').rglob('*'))
+        if len(files) > 1024 or any(p.is_symlink() for p in files) or sum(p.stat().st_size for p in files if p.is_file()) > 32 * 1024 * 1024:
+            raise ValueError('Native evidence inventory/size boundary exceeded')
+        matches = list((root / 'sessions').rglob('*' + manifest['session_id'] + '.jsonl'))
+        if len(matches) != 1:
+            raise ValueError('Exact native parent evidence missing/ambiguous')
+        records = collect_native_evidence(manifest['session_id'], root / 'sessions', matches[0])
+        # Paths identify the original worker logs, not the temporary extraction.
+        for record in records:
+            record['path'] = '/home/agent/.codex/sessions/' + Path(record['path']).relative_to(root / 'sessions').as_posix()
+        write_json(out / f'turn-{number}.native.json', public_event(records))
+        return records
+
+
+NATIVE_SANDBOX = {'type': 'workspaceWrite', 'writableRoots': [], 'networkAccess': False,
+                  'excludeTmpdirEnvVar': False, 'excludeSlashTmp': False}
+
+
+def check_effective(state, config):
+    expected = {'model': config['model'], 'modelProvider': 'evaluation', 'reasoningEffort': config['effort'],
+                'approvalPolicy': 'on-request', 'approvalsReviewer': 'user', 'cwd': '/work/codex',
+                'sandbox': NATIVE_SANDBOX, 'runtimeWorkspaceRoots': ['/work/codex']}
+    if any(state.get(k) != v for k, v in expected.items()):
+        raise ValueError('Effective native settings/permissions differ from frozen inputs')
+    return {k: state[k] for k in (*expected, 'instructionSources')}
+
+
+def deadline_watchdog(manifest, deadline, path, state):
+    def enforce():
+        state['fired'] = True
+        identities = [manifest['resources'][role] for role in ('worker', 'relay')]
+        try:
+            result = subprocess.run(['docker', 'kill', *identities], capture_output=True, text=True,
+                                    timeout=remaining(deadline, 2))
+            state['termination_exit'] = result.returncode
+        except (OSError, subprocess.SubprocessError, TimeoutError) as error:
+            state['termination_error'] = type(error).__name__
+            state['pending_ids'] = identities
+        write_json(path, state)
+    timer = threading.Timer(max(0, deadline - time.monotonic() - 2), enforce)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def report(out, manifest):
+    summary = {k: manifest.get(k) for k in ('trial_id', 'attempt_id', 'status', 'session_id', 'session_tree_id', 'utility_base', 'native_error', 'retired')}
+    summary['inputs'] = {k: manifest['config'][k] for k in ('comparison_id', 'case_id', 'variant', 'baseline', 'candidate', 'model', 'effort', 'image_id', 'limits')}
+    summary['reasoning_context'] = 'all_turns'
+    summary['engine'] = manifest.get('engine')
+    summary['source_inventory_counts'] = {t: len(manifest.get('installation', {}).get(t, {}).get('source_files', {})) for t in ('codex', 'claude')}
+    summary['native_gate'] = manifest.get('native_sandbox', {}).get('passed', False)
+    summary['relay_meter'] = manifest.get('relay_meter')
+    summary['turns'] = [{k: turn.get(k) for k in ('number', 'kind', 'status', 'thread_id', 'turn_id', 'resumed', 'cancellation_seconds', 'termination_method')} | {
+        'response_count': len(turn.get('responses', [])), 'reviewer_roles': [c.get('agentRole') for c in turn.get('child_metadata', [])]
+    } for turn in manifest.get('turns', [])]
+    summary['assessment'] = 'Native evidence requires external assessment; no complete evaluator or Claude behavior is certified.'
+    summary['collector_inputs'] = controller_inputs()
+    summary['execution_inputs'] = manifest['controller_inputs']
+    write_json(out / 'report.json', summary)
+    lines = ['# Native feasibility evidence', '', f"Status: `{summary['status']}`", '', summary['assessment'], '',
+             '| Probe | Native status | Correlated replies | Reviewer roles |', '| --- | --- | --- | --- |']
+    lines += [f"| {t['kind']} | {t['status']} | {t['response_count']} | {', '.join(r for r in t['reviewer_roles'] if r)} |" for t in summary['turns']]
+    if summary['native_error']:
+        lines += ['', 'Incomplete: ' + summary['native_error']]
+    (out / 'report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return manifest
+
+
+def retire(out, manifest):
+    """Explicit exact-ID teardown; retain data, remove credential carriers only."""
+    frozen = out / 'inputs.json'
+    if not frozen.exists() or digest(frozen) != manifest.get('frozen_inputs_sha256') or json.loads(frozen.read_text())['resources'] != manifest['resources']:
+        raise ValueError('Retirement needs intact recorded resource identities')
+    ledger_path = out / 'retirement.json'
+    ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {'trial_id': manifest['trial_id'], 'actions': {}}
+    for role in ('worker', 'prepare', 'canary', 'relay'):
+        if ledger['actions'].get(role, {}).get('completed'):
+            continue
+        identity = manifest['resources'][role]
+        inspected = docker('inspect', identity, timeout=3, check=False)
+        if inspected.returncode:
+            present = docker('container', 'ls', '-a', '--no-trunc', '--filter', 'id=' + identity, '--format', '{{.ID}}', timeout=3)
+            if present.stdout.strip():
+                raise ValueError('Retirement ownership readback unavailable')
+            ledger['actions'][role] = {'id': identity, 'completed': True, 'readback': 'exact resource absent'}
+            write_json(ledger_path, ledger)
+            continue
+        data = owned(manifest, role)
+        identity = data['Id']
+        ledger['actions'][role] = {'id': identity, 'action': 'stop-and-remove-credential-carrier' if role == 'relay' else 'stop', 'completed': False}
+        write_json(ledger_path, ledger)
+        if role == 'relay' and data['State']['Running']:
+            meter = docker('exec', identity, 'cat', '/state/meter.json', timeout=3)
+            write_json(out / 'retired-meter.json', json.loads(meter.stdout))
+        docker('stop', '--time', '0', identity, timeout=3)
+        if role == 'relay':
+            docker('rm', identity, timeout=3)
+        ledger['actions'][role]['completed'] = True
+        write_json(ledger_path, ledger)
+    manifest['retired'] = True
+    write_json(out / 'manifest.json', manifest)
+    return manifest
+
+
+def probe(out, manifest, resume_session=None, stop_after=None):
+    if manifest.get('retired'):
+        raise ValueError('Retired trials require a fresh trial, not resume')
+    if resume_session is None:
+        if manifest['status'] != 'native-sandbox-passed' or manifest['turns']:
+            raise ValueError('Fresh probes require all gates and no prior launched attempt')
+        manifest['probe_deadline'] = time.time() + LIMITS['trial_seconds']
+    elif (manifest['status'] != 'probe-checkpoint' or resume_session != manifest.get('session_id')
+          or not manifest['turns'] or any(t['status'] != 'completed' for t in manifest['turns'])):
+        raise ValueError('Resume requires exact session ID and a verified completed checkpoint')
+    if not os.environ.get('OPENAI_API_KEY'):
+        raise ValueError('Explicit controller model credential unavailable')
+    if [t['kind'] for t in manifest['turns']] != [p[0] for p in PROBES[:len(manifest['turns'])]]:
+        raise ValueError('Probe checkpoint order/identity changed')
+    try:
+        execution_deadline = time.monotonic() + max(0, manifest['probe_deadline'] - time.time())
+        for number, (kind, prompt) in list(enumerate(PROBES, 1))[len(manifest['turns']):]:
+            if number > LIMITS['turns'] or remaining(execution_deadline, LIMITS['trial_seconds']) < 10:
+                raise ValueError('Frozen trial budget exhausted')
+            turn_deadline = min(execution_deadline, time.monotonic() + LIMITS['turn_seconds'])
+            check_runtime_state(manifest, turn_deadline)
+            turn = {'number': number, 'kind': kind, 'status': 'launching'}
+            manifest['turns'].append(turn)
+            manifest['status'] = 'native-incomplete'
+            write_json(out / 'manifest.json', manifest)
+            watchdog_state = {'fired': False, 'turn': number}
+            timer = deadline_watchdog(manifest, turn_deadline, out / f'turn-{number}-watchdog.json', watchdog_state)
+            connection = None
+            try:
+                connection = Connection(manifest['resources']['worker'], manifest['config']['model'], manifest['config']['effort'],
+                                        out / f'turn-{number}.jsonl', deadline=turn_deadline)
+                def tighten_deadline(value):
+                    nonlocal timer
+                    connection.deadline = min(connection.deadline, value)
+                    timer.cancel()
+                    timer = deadline_watchdog(manifest, connection.deadline, out / f'turn-{number}-watchdog.json', watchdog_state)
+                params = {'cwd': '/work/codex', 'model': manifest['config']['model'], 'modelProvider': 'evaluation',
+                          'approvalPolicy': 'on-request', 'approvalsReviewer': 'user', 'sandbox': 'workspace-write',
+                          'runtimeWorkspaceRoots': ['/work/codex']}
+                if manifest.get('session_id'):
+                    params['threadId'], params['excludeTurns'] = manifest['session_id'], True
+                    state = connection.call('thread/resume', params)
+                    if state['thread']['id'] != manifest['session_id']:
+                        raise ValueError('Explicit native resume identity mismatch')
+                    turn['resumed'] = True
+                else:
+                    params['allowProviderModelFallback'] = False
+                    state = connection.call('thread/start', params)
+                    manifest['session_id'] = state['thread']['id']
+                    manifest['session_tree_id'] = state['thread']['sessionId']
+                if state['thread']['sessionId'] != manifest['session_tree_id']:
+                    raise ValueError('Native session-tree identity changed')
+                turn['effective'] = check_effective(state, manifest['config'])
+                write_json(out / 'manifest.json', manifest)
+                relay_control(manifest, time.time() + remaining(turn_deadline, LIMITS['turn_seconds']), turn_deadline)
+                observed = probe_turn(connection, manifest['session_id'], kind, prompt, manifest['config']['model'], manifest['config']['effort'],
+                                      lambda: heartbeat(manifest, connection.deadline), lambda: relay_control(manifest, 0, connection.deadline),
+                                      turn_deadline, tighten_deadline, turn)
+                turn.update(observed)
+                turn['children'] = sorted(set(turn['children']))
+                turn['child_metadata'] = [connection.call('thread/read', {'threadId': identity, 'includeTurns': False})['thread'] for identity in turn['children']]
+                if kind in ('plan-reviewer', 'code-reviewer') and not any(child.get('agentRole') == kind for child in turn['child_metadata']):
+                    raise ValueError('Actual installed named reviewer role was not observed')
+            finally:
+                cleanup_deadline = min(turn_deadline, time.monotonic() + 10,
+                                       connection.deadline if connection else turn_deadline)
+                if connection:
+                    connection.deadline = cleanup_deadline
+                timer.cancel()
+                timer = deadline_watchdog(manifest, cleanup_deadline, out / f'turn-{number}-cleanup-watchdog.json', watchdog_state)
+                disarm_ok = False
+                cleanup_ok = False
+                try:
+                    relay_control(manifest, 0, cleanup_deadline)
+                    disarm_ok = True
+                finally:
+                    try:
+                        if connection:
+                            connection.close()
+                        cleanup_ok = True
+                    finally:
+                        timer.cancel()
+                        if not (cleanup_ok and disarm_ok) and not watchdog_state['fired']:
+                            fallback_deadline = min(cleanup_deadline, time.monotonic() + 2)
+                            fallback = deadline_watchdog(manifest, fallback_deadline,
+                                                         out / f'turn-{number}-cleanup-fallback.json', watchdog_state)
+                            fallback.join(max(0, fallback_deadline - time.monotonic()))
+            if watchdog_state['fired']:
+                raise RuntimeError('Absolute deadline enforced; worker/relay stopped or require readback')
+            check_runtime_state(manifest, turn_deadline)
+            records = collect_session(manifest, out, number, turn_deadline)
+            if kind in ('plan-reviewer', 'code-reviewer'):
+                children = {r['id']: r for r in records}
+                expected_children = [c['id'] for c in turn['child_metadata'] if c.get('agentRole') == kind]
+                if not all(identity in children and children[identity]['tool_records'] for identity in expected_children):
+                    raise ValueError('Native reviewer own context/action evidence is missing')
+            manifest['relay_meter'] = json.loads(docker('exec', manifest['resources']['relay'], 'cat', '/state/meter.json', deadline=turn_deadline).stdout)
+            remaining(turn_deadline, 1)
+            manifest['status'] = 'native-evidence-pending-assessment' if number == len(PROBES) else 'probe-checkpoint'
+            write_json(out / 'manifest.json', manifest)
+            if stop_after == kind:
+                return manifest
+        manifest['status'] = 'native-evidence-pending-assessment'
+        return manifest
+    except BaseException as error:
+        manifest['status'], manifest['native_error'] = 'native-blocked', str(error)
+        raise
+    finally:
+        write_json(out / 'manifest.json', manifest)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['prepare', 'preflight', 'sandbox-gate', 'report'])
+    parser.add_argument('operation', choices=['prepare', 'preflight', 'sandbox-gate', 'probe', 'resume', 'report', 'retire'])
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--session-id', help='Exact recorded parent session; required by resume')
+    parser.add_argument('--stop-after', choices=[p[0] for p in PROBES], help='Retain a completed native checkpoint')
     args = parser.parse_args()
     if args.operation == 'prepare':
         if not args.config:
             parser.error('prepare requires explicit --config')
         result = prepare(args.output, json.loads(args.config.read_text()))
     else:
-        out, manifest = load(args.output, args.operation != 'report')
+        out, manifest = load(args.output, args.operation not in ('report', 'retire'))
         if args.config and json.loads(args.config.read_text()) != manifest['config']:
             raise ValueError('Continuation configuration differs from frozen inputs')
         if args.operation == 'preflight':
@@ -315,8 +579,14 @@ def main():
             if manifest['status'] == 'native-sandbox-blocked':
                 raise RuntimeError('Native sandbox command failed; model execution remains blocked')
             result = manifest
+        elif args.operation in ('probe', 'resume'):
+            if args.operation == 'resume' and not args.session_id:
+                parser.error('resume requires explicit --session-id')
+            result = probe(out, manifest, args.session_id if args.operation == 'resume' else None, args.stop_after)
+        elif args.operation == 'retire':
+            result = retire(out, manifest)
         else:
-            result = manifest
+            result = report(out, manifest)
     print(json.dumps({k: result[k] for k in ('trial_id', 'attempt_id', 'status')}))
 
 

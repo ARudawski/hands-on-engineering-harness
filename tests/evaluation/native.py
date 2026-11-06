@@ -8,20 +8,31 @@ import threading
 import time
 
 
+def remaining(deadline, maximum):
+    if deadline is None:
+        return maximum
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise TimeoutError('Absolute native operation deadline exhausted')
+    return min(maximum, value)
+
+
 def public_event(value):
     if isinstance(value, list):
         return [clean for v in value if (clean := public_event(v)) is not None]
     if isinstance(value, dict):
-        if 'reasoning' in str(value.get('type', '')).lower() or 'reasoning' in str(value.get('method', '')).lower():
+        if value.get('type') == 'encrypted_content' or 'reasoning' in str(value.get('type', '')).lower() or 'reasoning' in str(value.get('method', '')).lower():
             return None
         return {k: clean for k, v in value.items() if k != 'encrypted_content' and (clean := public_event(v)) is not None}
     return value
 
 
 class Connection:
-    def __init__(self, worker, model, effort, evidence, legacy=False):
+    def __init__(self, worker, model, effort, evidence, legacy=False, deadline=None):
         self.events, self.pending, self.sequence, self.output_bytes = [], queue.Queue(maxsize=4096), 0, 0
         self.worker = worker
+        self.closed = False
+        self.deadline = deadline
         self.evidence = Path(evidence)
         self.errors = self.evidence.with_suffix('.stderr.log').open('x', encoding='utf-8')
         config = {'model': model, 'model_reasoning_effort': effort, 'model_provider': 'evaluation',
@@ -64,6 +75,8 @@ class Connection:
             self.pending.put({'protocol_error': 'app-server ended'})
 
     def send(self, message):
+        with self.evidence.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps({'direction': 'client', 'message': public_event(message)}) + '\n')
         self.process.stdin.write(json.dumps(message) + '\n')
         self.process.stdin.flush()
 
@@ -85,7 +98,7 @@ class Connection:
         self.sequence += 1
         identity = self.sequence
         self.send({'id': identity, 'method': method, 'params': params})
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + remaining(self.deadline, timeout)
         while True:
             if time.monotonic() >= deadline:
                 raise TimeoutError('Native request deadline exhausted')
@@ -98,7 +111,9 @@ class Connection:
                 raise RuntimeError('Unmatched native request blocks operation')
 
     def close(self):
-        deadline = time.monotonic() + 10
+        if self.closed:
+            return
+        deadline = min(self.deadline if self.deadline is not None else float('inf'), time.monotonic() + 10)
         def budget(maximum):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -107,13 +122,28 @@ class Connection:
         try:
             try:
                 self.process.stdin.close()
+                # Windows Docker's attached stdin may not deliver EOF promptly.
+                # This namespace is dedicated to this operation; terminate only
+                # its non-init processes before verifying absence of descendants.
+                subprocess.run(['docker', 'exec', self.worker, 'python', '-c',
+                    "import pathlib,os,signal\n"
+                    "for p in pathlib.Path('/proc').iterdir():\n"
+                    " try:\n"
+                    "  if p.name.isdigit() and int(p.name) not in (1,os.getpid()) and (p/'cmdline').read_bytes(): os.kill(int(p.name),signal.SIGKILL)\n"
+                    " except (FileNotFoundError,ProcessLookupError): pass\n"],
+                    capture_output=True, timeout=budget(2), check=True)
                 try:
-                    self.process.wait(timeout=budget(3))
+                    self.process.wait(timeout=budget(2))
                 except subprocess.TimeoutExpired:
                     self.process.kill()
                     self.process.wait(timeout=budget(1))
                 check = subprocess.run(['docker', 'exec', self.worker, 'python', '-c',
-                    "import pathlib,os,json; print(json.dumps([p.name for p in pathlib.Path('/proc').iterdir() if p.name.isdigit() and int(p.name) not in (1,os.getpid()) and (p/'cmdline').read_bytes()]))"],
+                    "import pathlib,os,json\nleft=[]\n"
+                    "for p in pathlib.Path('/proc').iterdir():\n"
+                    " try:\n"
+                    "  if p.name.isdigit() and int(p.name) not in (1,os.getpid()) and (p/'cmdline').read_bytes(): left.append(p.name)\n"
+                    " except FileNotFoundError: pass\n"
+                    "print(json.dumps(left))"],
                     capture_output=True, text=True, timeout=budget(2))
                 clean = check.returncode == 0 and not json.loads(check.stdout)
             except (OSError, ValueError, subprocess.SubprocessError, TimeoutError):
@@ -121,6 +151,7 @@ class Connection:
             if not clean:
                 subprocess.run(['docker', 'stop', '--time', '0', self.worker], capture_output=True, timeout=budget(2), check=True)
                 raise RuntimeError('Native cleanup left remote processes; owned worker stopped')
+            self.closed = True
         finally:
             self.errors.close()
 
