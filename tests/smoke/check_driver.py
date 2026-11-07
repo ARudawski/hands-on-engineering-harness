@@ -156,6 +156,19 @@ class DriverGuards(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "identity mismatch"):
                 run.validate_resume("missing-context", out, manifest)
 
+    def test_shared_native_helpers_are_frozen_for_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory).resolve()
+            (out / "consumer").mkdir()
+            manifest = {"case": "missing-context", "output_dir": str(out), "inputs": run.inputs("missing-context"),
+                        "runtime_installed": {}, "turns": [], "session_id": None, "status": "prepared"}
+            run.validate_resume("missing-context", out, manifest)
+            helper = run.ROOT / "tests/native_support.py"
+            original_digest = run.digest
+            with patch.object(run, "digest", side_effect=lambda path: "changed-helper" if path == helper else original_digest(path)):
+                with self.assertRaisesRegex(ValueError, "hashes changed"):
+                    run.validate_resume("missing-context", out, manifest)
+
     def test_changed_installed_input_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory).resolve()

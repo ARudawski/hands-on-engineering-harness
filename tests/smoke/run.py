@@ -34,6 +34,7 @@ def inputs(case):
     return {
         "package": {**{f".apm/{p}": h for p, h in inventory(ROOT / ".apm").items()}, "apm.yml": digest(ROOT / "apm.yml")},
         "driver": digest(Path(__file__)), "support": digest(ROOT / "tests/apm_support.py"),
+        "native_support": digest(ROOT / "tests/native_support.py"),
         "fixtures": {p: digest(FIXTURES / p) for p in fixtures},
         "prompt": hashlib.sha256(PROMPTS[case].encode()).hexdigest(),
     }
