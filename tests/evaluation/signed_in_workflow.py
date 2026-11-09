@@ -743,17 +743,20 @@ class CandidateObservation:
                 self._problem()
             self.metadata(data)
 
-    def complete(self):
+    def quiescent(self):
         if self.buffer or set(self.parents) != self.threads.keys() or self.limitations:
-            return False
-        root_states = [status for (thread,_),status in self.turns.items() if thread == self.root]
-        if not root_states or root_states[-1] != 'completed':
             return False
         return (all(t['status'] == 'idle' and not t.get('waiting') for t in self.threads.values())
                 and all(s in ('completed','failed','interrupted') for s in self.turns.values())
                 and all(done or self.turns.get((t,u)) in ('failed','interrupted')
                         for (t,u,_),(_,done) in self.items.items())
                 and self.callbacks.keys() <= self.resolved)
+
+    def complete(self):
+        return self.turns.get((self.root,self.root_turn())) == 'completed' and self.quiescent()
+
+    def root_turn(self):
+        return self.current_root_turn or next((u for t,u in reversed(self.turns) if t == self.root), None)
 
     def begin_root_turn(self, turn):
         self.current_root_turn = identity(turn)
@@ -765,21 +768,23 @@ class CandidateObservation:
         self.frame_generation += 1
         self.awaiting_followup = True
 
-    def root_artifact(self):
+    def root_artifact(self, turn):
         return [{'thread_id':t,'turn_id':u,'item_id':i,'text':text}
-                for (t,u,i),text in self.messages.items() if t == self.root]
+                for (t,u,i),text in self.messages.items() if t == self.root and u == turn]
 
     def seal_completion(self):
         roots = [u for (t,u) in self.turns if t == self.root]
-        turn = self.current_root_turn or (roots[-1] if roots else None)
+        turn = self.root_turn()
         key = (self.root,turn)
         if (self.awaiting_followup or self.turns.get(key) != 'completed' or self.buffer or self.limitations
                 or key not in self.completion_times
                 or any(not done for (t,u,_),(_,done) in self.items.items() if (t,u) == key)):
             self.completed_frame = None
             return None
-        artifact = self.root_artifact()
-        bound = {'root':self.root,'turn':turn,'generation':self.frame_generation,'messages':artifact}
+        artifact = self.root_artifact(turn)
+        context = [m for u in roots if u != turn for m in self.root_artifact(u)]
+        bound = {'root':self.root,'turn':turn,'generation':self.frame_generation,
+                 'messages':artifact,'context':context}
         digest = hashlib.sha256(json.dumps(bound,sort_keys=True).encode()).hexdigest()
         frame = {**bound,'artifact_sha256':digest,**self.completion_times[key]}
         self.completed_frame = frame
@@ -891,14 +896,15 @@ class CandidateObservation:
                     self.drain_observations()
                     self.dispatch_decisions()
                     self.seal_completion()
-                    root_states = [s for (t,_),s in self.turns.items() if t == self.root]
-                    if root_states[-1] == 'interrupted':
+                    root_status = self.turns.get((self.root,self.root_turn()))
+                    if root_status == 'interrupted':
                         return self.snapshot('interrupted')
+                    if root_status == 'failed' and self.quiescent():
+                        return self.snapshot('failed')
                     if self.complete():
                         self.unchanged()
                         if self.delivery:
-                            followup = self.delivery.completed_turn(self, next(
-                                u for (t,u) in reversed(self.turns) if t == self.root))
+                            followup = self.delivery.completed_turn(self, self.root_turn())
                             if followup is not None:
                                 self.delivery.check_connected()
                                 turn = self.connection.call('turn/start', {'threadId':self.root,

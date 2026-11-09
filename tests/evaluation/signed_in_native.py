@@ -1050,7 +1050,7 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
                 delivery.admit(result, codex, options, consumer, home)
                 workflow = CandidateObservation(connection,result,save,consumer=consumer,marker=marker,delivery=delivery)
                 observed = workflow.run()
-                reason = {'completed':'completed','deadline':'deadline_exhausted',
+                reason = {'completed':'completed','failed':'candidate_failed','deadline':'deadline_exhausted',
                           'disconnected':'controller_disconnected','cancelled':'interrupted'}.get(observed['execution_end'],'missing_evidence')
                 result['cleanup_method'] = 'owned_job_close'
                 owner.begin_cleanup(reason)

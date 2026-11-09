@@ -689,6 +689,14 @@ up; reconnect recovery is deferred. An origin/request-bound
 `{"origin":"<chat UUID>","request_id":"<request UUID>","action":"cancel"}` can cancel
 an active connection.
 
+Each completion grades only messages attributable to its current root turn.
+Earlier root messages are separately identified as assessment context and remain
+in private evidence. An empty completed follow-up is unassessed; its predecessor's
+answer cannot substitute for missing output. A failed root ends as `failed` once
+queued events and metadata confirm quiescence, with `candidate_failed` as the
+cleanup stop reason. Active descendants, unresolved decisions and unfinished
+successful work still prevent quiescence.
+
 Grades remain provisional until cleanup and integrity checks succeed. If the
 assessor misses the work cutoff, native work stops; the original unanswered
 assessment identity can still receive a grade for that same frozen artifact on
@@ -700,6 +708,16 @@ assessment time, root completion evidence, participant
 observations, answer, quality judgment and cleanup. Unobserved waits are marked
 unknown. Failed cleanup prevents acceptance; a wrong answer can be a valid
 measurement.
+
+Final reports contain one copy of the current answer under `deliverable`;
+`completion` contains its identity, digest and timing metadata. The channel checks
+the whole encoded JSON result against its131072-byte limit. Oversize results omit
+bulk details, set `details_omitted: true`, and retain request/attempt/candidate
+identity, outcome, timing, assessment, cleanup and the existing `evidence` path.
+Read that private native receipt for full output/history; the original full
+delivery result stays in the request store. Duplicate retrieval uses the same
+bounded projection without relaunch or rewriting old receipts. Other checkpoint
+messages retain their size validation and one-use authorization requirements.
 
 Controlled transports cover the corrected protocol; a model-free native preparation
 checks the private-install/deployed-view command boundary. The earlier real

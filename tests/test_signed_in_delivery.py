@@ -4,6 +4,7 @@ from io import StringIO
 from contextlib import ExitStack
 import json
 import os
+import queue
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -103,6 +104,53 @@ class ConnectedDelivery(unittest.TestCase):
         self.input['request_id']=str(uuid4());before=len(self.channel.events)
         self.assertEqual(self.run_delivery(runner=missing)['assessment']['verdict'],'unassessed')
         self.assertEqual(len(self.channel.events),before)
+
+    def test_final_report_has_one_answer_copy_and_large_retrieval_reaches_the_real_channel(self):
+        for answer in ('A'*65536, '\U0001f642'*16384, '\x01'*65536):
+            with self.subTest(character=repr(answer[0])):
+                self.input['request_id']=str(uuid4())
+                def runner(payload,**kwargs):
+                    result=self.replay(payload,**kwargs)
+                    result['candidate_observation']['agent_messages'][0]['text']=answer
+                    return result
+                first=self.run_delivery(runner=runner)
+                self.assertFalse('messages' in first['completion'])
+                self.assertEqual(first['deliverable'][0]['text'],answer)
+                self.assertEqual(first['assessment']['verdict'],'pass')
+                wires=[]
+                for _ in range(2):
+                    output=StringIO()
+                    with patch.object(signed_in,'ROOT',self.root),patch.object(sys,'argv',['signed_in.py']), \
+                         patch.object(sys,'stdin',StringIO(json.dumps(self.input)+'\n')), \
+                         patch.object(sys,'stdout',output),patch.dict(os.environ,CODEX_THREAD_ID=self.origin):
+                        self.assertIsNone(signed_in.main())
+                    raw=output.getvalue();self.assertLessEqual(len(raw.encode('ascii')),131072)
+                    response=json.loads(raw);self.assertEqual(response['kind'],'result')
+                    body=response['body'];self.assertEqual(body['request_id'],self.input['request_id'])
+                    self.assertEqual(body['assessment'],first['assessment'])
+                    self.assertEqual(body['evidence'],first['evidence'])
+                    self.assertEqual(body['cleanup_verified'],True)
+                    if answer[0]!='A':
+                        self.assertTrue(body['details_omitted'])
+                        self.assertNotIn('deliverable',body)
+                    else:self.assertEqual(body['deliverable'],first['deliverable'])
+                    wires.append(raw)
+                self.assertEqual(wires[0],wires[1])
+                self.assertEqual(self.run_delivery(runner=Mock(side_effect=AssertionError('relaunch'))),first)
+
+    def test_oversize_legacy_result_is_projected_without_rewriting_its_receipt(self):
+        first=self.run_delivery()
+        first['completion']['messages']=[{**first['deliverable'][0],'text':'A'*65536}]
+        first['deliverable']=first['completion']['messages']
+        store=RequestStore(self.root/'.tmp/evaluation-signed-in')
+        with store.request(self.origin,self.request) as state:state['delivery_receipt']=first
+        output=StringIO();channel=delivery.JsonChannel(StringIO(''),output)
+        again=self.run_delivery(runner=Mock(side_effect=AssertionError('relaunch')))
+        channel.emit({'kind':'result','body':again})
+        body=json.loads(output.getvalue())['body']
+        self.assertTrue(body['details_omitted']);self.assertEqual(body['evidence'],first['evidence'])
+        self.assertNotIn('messages',body['completion'])
+        self.assertEqual(self.run_delivery(),first)
 
     def test_integrity_failures_withhold_grade_but_optional_child_warning_does_not(self):
         def warned(payload,**kwargs):
@@ -406,6 +454,12 @@ class NativePipeline(unittest.TestCase):
     def test_native_question_arriving_during_assessment_is_forwarded_before_completion(self):
         self.run_pipeline(False, 'assessment_question')
 
+    def test_followup_without_own_output_cannot_be_graded_on_previous_turn(self):
+        self.run_pipeline(False, 'empty_followup')
+
+    def test_failed_idle_root_ends_before_deadline_and_cleans_up(self):
+        self.run_pipeline(False, 'root_failed')
+
     def run_pipeline(self, deny, flow='finish'):
         from evaluation.signed_in_worker import CANDIDATE_CHECKS
         import evaluation.signed_in_workflow as workflow
@@ -425,6 +479,9 @@ class NativePipeline(unittest.TestCase):
                     return json.dumps(dict(local_network=True,external_network=True,dns=True))
                 return ''
             def remaining(self,*args,**kwargs):
+                if flow=='root_failed':
+                    self.ticks=getattr(self,'ticks',0)+1
+                    if self.ticks>30 and not kwargs.get('cleanup'):raise TimeoutError()
                 if flow=='deadline' and 'turn/start' in trace and not kwargs.get('cleanup'):
                     raise TimeoutError()
                 if flow=='late_assessment' and outputs and not kwargs.get('cleanup'):
@@ -465,11 +522,11 @@ class NativePipeline(unittest.TestCase):
                     if flow=='question_continue' and self.starts==1:
                         self.events.append({'id':7,'method':'item/tool/requestUserInput','params':{
                             'threadId':outer.thread,'turnId':turn,'questions':[{'id':'q','question':'Assess only?'}]}})
-                    self.events.extend([
-                        {'method':'item/completed','params':{'threadId':outer.thread,'turnId':turn,
-                            'item':{'type':'agentMessage','id':'answer','text':'The sum is wrong: [1,2] must be 3.'}}},
-                        {'method':'turn/completed','params':{'threadId':outer.thread,
-                            'turn':{'id':turn,'status':'completed'}}}])
+                    if not (flow=='empty_followup' and self.starts==2) and flow!='root_failed':
+                        self.events.append({'method':'item/completed','params':{'threadId':outer.thread,'turnId':turn,
+                            'item':{'type':'agentMessage','id':'answer','text':'The sum is wrong: [1,2] must be 3.'}}})
+                    self.events.append({'method':'turn/completed','params':{'threadId':outer.thread,
+                            'turn':{'id':turn,'status':'failed' if flow=='root_failed' else 'completed'}}})
                     return {'turn':{'id':turn}}
                 if method=='thread/read':
                     if flow=='queued_message' and not getattr(self,'queued',False):
@@ -483,7 +540,9 @@ class NativePipeline(unittest.TestCase):
                     return {'thread':{'id':outer.thread,'status':{'type':'idle'}}}
                 if method=='turn/interrupt':return {}
                 raise AssertionError(method)
-            def event(self):return self.events.popleft()
+            def event(self):
+                if not self.events:raise queue.Empty()
+                return self.events.popleft()
             def respond(self,request,response):wire_response(self,request,response)
             def _write(self,value):
                 trace.append(('reply',value['id']))
@@ -501,7 +560,7 @@ class NativePipeline(unittest.TestCase):
                 if flow=='stale_assessment':
                     wires[0].pending.append({'method':'item/completed','params':{'threadId':outer.thread,'turnId':outer.turn,
                         'item':{'id':'late_answer','type':'agentMessage','text':'Additional material changes the artifact.'}}})
-                if flow=='question_continue' and len(outputs)==1:
+                if flow in ('question_continue','empty_followup') and len(outputs)==1:
                     return {'status':'waiting','question':'May I continue the assessment?'}
             return {'verdict':'pass','reason':'Incorrect sum identified with a valid example.'}
         wires=[]
@@ -565,6 +624,17 @@ class NativePipeline(unittest.TestCase):
         elif flow=='stale_assessment':
             self.assertEqual(report['assessment']['verdict'],'unassessed',trace)
             self.assertIn('candidate_observation_incomplete',report['limitations'])
+        elif flow=='empty_followup':
+            self.assertEqual(report['execution_end'],'completed',trace)
+            self.assertEqual(report['assessment']['verdict'],'unassessed',trace)
+            self.assertEqual(report['deliverable'],[])
+            self.assertEqual(len(outputs),1)
+            self.assertEqual(trace.count('turn/start'),2)
+        elif flow=='root_failed':
+            self.assertEqual(report['execution_end'],'failed',trace)
+            self.assertEqual(report['assessment']['verdict'],'unassessed')
+            self.assertIn(('job_empty','candidate_failed'),trace)
+            self.assertLess(owner.ticks,30)
         else:
             self.assertEqual(report['assessment']['verdict'],'pass',trace)
             self.assertEqual(report['execution_end'],'deadline' if flow=='late_assessment' else 'completed')
@@ -580,6 +650,11 @@ class NativePipeline(unittest.TestCase):
             if flow=='question_continue':
                 self.assertEqual(trace.count('turn/start'),2)
                 self.assertEqual(trace.count(('reply',7)),1)
+                self.assertEqual(len(report['deliverable']),1)
+                frame=outputs[1]['body']['completion']
+                self.assertEqual(len(frame['context']),1)
+                self.assertTrue(all(m['turn_id']==frame['turn'] for m in frame['messages']))
+                self.assertTrue(all(m['turn_id']!=frame['turn'] for m in frame['context']))
             if flow=='queued_question':self.assertEqual(trace.count(('reply',7)),1)
             if flow=='assessment_question':
                 self.assertEqual(trace.count(('reply',7)),1)

@@ -73,6 +73,20 @@ class JsonChannel:
 
     def emit(self, value, *, timeout=1):
         encoded = (json.dumps(value, ensure_ascii=True)+'\n').encode('ascii')
+        if (len(encoded) > 131072 and value.get('kind') == 'result'
+                and isinstance(value.get('body'), dict) and value['body'].get('evidence')):
+            report = value['body']
+            fields = ('origin','request_id','attempt_id','candidate_revision','case','case_revision',
+                      'budget_seconds','root_thread_id','execution_end','elapsed_seconds',
+                      'identifiable_wait_seconds','trusted_assessment_seconds','assessment',
+                      'cleanup_verified','evidence')
+            summary = {k:report[k] for k in fields if k in report}
+            completion = report.get('completion')
+            if isinstance(completion, dict):
+                summary['completion'] = {k:completion[k] for k in (
+                    'root','turn','generation','artifact_sha256','observed_at','elapsed_seconds') if k in completion}
+            summary['details_omitted'] = True
+            encoded = (json.dumps({'kind':'result','body':summary},ensure_ascii=True)+'\n').encode('ascii')
         if len(encoded) > 131072:
             raise ValueError('controller_output_limit')
         complete, failed = threading.Event(), threading.Event()
@@ -239,8 +253,10 @@ class Delivery:
 
     def completed_turn(self, observer, turn):
         frame = observer.seal_completion()
-        if frame is None or not frame['messages']:
+        if frame is None:
             raise RuntimeError('candidate_observation_incomplete')
+        if not frame['messages']:
+            return None  # A completed empty follow-up cannot reuse an earlier answer.
         observer.snapshot('awaiting_assessment')
         if self.provisional_assessment:
             if self.provisional_assessment[0] != frame['artifact_sha256']:
@@ -410,8 +426,10 @@ def deliver(payload, channel, *, root, origin, native_runner=None, resolver=reso
         store.stop(origin, payload['request_id'], 'missing_evidence')
     observation = result.get('candidate_observation', {})
     messages = observation.get('agent_messages', [])
-    deliverable = [m for m in messages if m.get('thread_id') == result.get('root_thread_id')]
     frame = observation.get('completion')
+    turn = frame.get('turn') if frame else next((t['turn_id'] for t in reversed(observation.get('turns', []))
+                                               if t['thread_id'] == result.get('root_thread_id')), None)
+    deliverable = [m for m in messages if m.get('thread_id') == result.get('root_thread_id') and m.get('turn_id') == turn]
     try:
         if (result.get('cleanup_verified') is True and frame and frame.get('root') == result.get('root_thread_id')
                 and frame.get('messages') == deliverable and deliverable
@@ -431,7 +449,8 @@ def deliver(payload, channel, *, root, origin, native_runner=None, resolver=reso
                   'identifiable_wait_seconds': round(session.wait_seconds, 3),
                   'trusted_assessment_seconds': round(session.assessment_seconds, 3),
                   'wait_coverage': 'native questions/permissions and genuine prose decisions; other waits unknown',
-                  'completion': frame, 'operator_wait': session.operator_wait,
+                  'completion': {k:v for k,v in frame.items() if k not in ('messages','context')} if frame else None,
+                  'operator_wait': session.operator_wait,
                   'behavior_warnings': observation.get('behavior_warnings', []),
                   'requested_root_default': {'model': 'gpt-6-luna', 'effort': 'low'},
                   'participants': observation.get('participants', []), 'subagent_coverage': observation.get('subagent_coverage', 'unknown'),

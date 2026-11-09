@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = '99c823abd4f0fc9cc58eda47ca775de64415fd35'
-REASONS = {'completed', 'controller_disconnected', 'deployment_unavailable', 'deadline_exhausted', 'clock_changed',
+REASONS = {'completed', 'candidate_failed', 'controller_disconnected', 'deployment_unavailable', 'deadline_exhausted', 'clock_changed',
            'interrupted', 'cleanup_failed', 'missing_evidence', 'protected_disclosure',
            'evidence_limit', 'reviewer_route_unverified', 'workspace_requirements_unavailable'}
 KINDS = {'preparation', 'launch', 'resume', 'question', 'permission',

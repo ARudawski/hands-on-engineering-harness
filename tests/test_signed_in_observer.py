@@ -80,6 +80,30 @@ class OpenObservation(unittest.TestCase):
         self.assertEqual(self.observer.seal_completion()['turn'],later)
         self.assertEqual(self.observer.limitations,set())
 
+    def test_delayed_failure_of_earlier_turn_does_not_replace_current_turn(self):
+        current=str(uuid4());self.observer.begin_root_turn(current)
+        self.observer.feed(self.turn_event(self.root,self.turn,'failed'))
+        self.observer.feed(self.message(self.root,current,'Recovered assessment'))
+        self.observer.feed(self.turn_event(self.root,current));self.observer.reconcile()
+        self.assertTrue(self.observer.complete())
+        self.assertEqual(self.observer.root_turn(),current)
+        self.assertEqual(self.observer.seal_completion()['turn'],current)
+
+    def test_failed_root_waits_for_active_child_pending_question_and_unfinished_work(self):
+        child,turn=str(uuid4()),str(uuid4())
+        self.observer.feed(self.child(child,'optional'))
+        self.observer.feed(self.turn_event(self.root,self.turn,'failed'))
+        self.observer.feed(self.turn_event(child,turn,'inProgress'));self.observer.reconcile()
+        self.assertFalse(self.observer.quiescent())
+        self.observer.feed(self.turn_event(child,turn));self.assertTrue(self.observer.quiescent())
+        request={'id':7,'method':'item/tool/requestUserInput','params':{'threadId':self.root,'turnId':self.turn}}
+        self.observer.feed(request);self.assertFalse(self.observer.quiescent())
+        self.observer.feed({'method':'serverRequest/resolved','params':{'threadId':self.root,'requestId':7}})
+        self.assertTrue(self.observer.quiescent())
+        self.observer.feed({'method':'item/started','params':{'threadId':child,'turnId':turn,
+            'item':{'id':'unconfirmed','type':'commandExecution'}}})
+        self.assertFalse(self.observer.quiescent())
+
     def test_completion_time_is_immediate_but_frame_includes_queued_messages_and_is_retired(self):
         with patch('evaluation.signed_in_workflow.time.time',return_value=123):
             self.observer.feed(self.turn_event(self.root,self.turn))
