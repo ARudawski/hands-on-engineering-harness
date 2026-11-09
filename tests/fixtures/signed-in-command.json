@@ -1,0 +1,11 @@
+{
+  "origin": "Anonymized exact Codex 0.166.0-alpha.6 command display observed in AP10",
+  "expected": "& 'C:\\Program Files\\Python\\python.exe' -I -B 'C:\\trial\\public files\\h12-probe.py' preflight",
+  "argv": [
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "-NoProfile",
+    "-Command",
+    "& 'C:\\Program Files\\Python\\python.exe' -I -B 'C:\\trial\\public files\\h12-probe.py' preflight"
+  ],
+  "display": "\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -NoProfile -Command \"& 'C:\\\\Program Files\\\\Python\\\\python.exe' -I -B 'C:\\\\trial\\\\public files\\\\h12-probe.py' preflight\""
+}

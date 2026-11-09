@@ -137,7 +137,10 @@ See [contribution guidance](CONTRIBUTING.md) for changes and validation.
 Isolated evaluator feasibility tooling is documented in
 [tests/evaluation](tests/evaluation/README.md). It uses full pinned repository
 installations and explicit worker/native containment gates, separately from the
-reduced smoke fixtures above. Docker/model execution is opt-in; ordinary package
+reduced smoke fixtures above. The signed-in candidate path keeps the full install
+private and exposes its deployed assets in a separate workspace. A prior native
+trial had readable answer hints and does not establish clean quality measurement.
+Docker/model execution is opt-in; ordinary package
 and driver CI remains credential-free.
 
 ## License
