@@ -16,6 +16,16 @@ from apm_support import isolated_apm_env, require_apm_version
 from native_support import digest, inventory
 
 
+def native_foundation_files():
+    """Exact public native-foundation-v2 inputs shared by both deployments."""
+    return {
+        'contract.md': '# Approved probe scope\nThe total(values) function returns the mathematical sum of supplied integers. Example: [2, 3] => 5. Empty => 0. No implementation or project test execution is authorized during reviews.\n',
+        'before.py': 'def total(values):\n    return sum(values)\n',
+        'after.py': 'def total(values):\n    return sum(values) + 1\n',
+        'plan.md': '# Exact plan to review\nScope: restore total(values) to mathematical sum; preserve integer inputs and empty behavior. AC1: [2,3] => 5; AC2: [] => 0. Increment P1 changes the shared aggregation contract. Dependent P2 updates its caller tests to that exact contract. Check both examples and caller integration. No implementation is authorized by this planning assessment.\n',
+    }
+
+
 def install(inputs):
     Path('/home/agent/.codex').mkdir(exist_ok=True)
     # Fresh trial setup, not a rewrite of any existing consumer configuration.
@@ -66,12 +76,7 @@ def install(inputs):
     result['runtime_config_sha256'] = digest(Path('/home/agent/.codex/config.toml'))
     fixture = Path('/work/codex/.tmp/native-foundation')
     fixture.mkdir(parents=True)
-    files = {
-        'contract.md': '# Approved probe scope\nThe total(values) function returns the mathematical sum of supplied integers. Example: [2, 3] => 5. Empty => 0. No implementation or project test execution is authorized during reviews.\n',
-        'before.py': 'def total(values):\n    return sum(values)\n',
-        'after.py': 'def total(values):\n    return sum(values) + 1\n',
-        'plan.md': '# Exact plan to review\nScope: restore total(values) to mathematical sum; preserve integer inputs and empty behavior. AC1: [2,3] => 5; AC2: [] => 0. Increment P1 changes the shared aggregation contract. Dependent P2 updates its caller tests to that exact contract. Check both examples and caller integration. No implementation is authorized by this planning assessment.\n',
-    }
+    files = native_foundation_files()
     for name, content in files.items():
         (fixture / name).write_text(content)
     result['fixture_hashes'] = {name: digest(fixture / name) for name in files}

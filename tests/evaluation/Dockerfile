@@ -3,6 +3,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm 
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir apm-cli==0.35.0 \
     && npm install -g @openai/codex@0.166.0-alpha.6
+RUN python -c "from pathlib import Path; targets = list(Path('/usr/local/lib/node_modules/@openai').glob('**/vendor/*/bin/codex')); assert len(targets) == 1; Path('/usr/local/bin/codex-linux-sandbox').symlink_to(targets[0])" \
+    && codex-linux-sandbox --help > /dev/null
 RUN useradd --uid 10001 --create-home agent && mkdir /work /state /opt/evaluation \
     && chown agent:agent /work /state
 COPY evaluation/relay.py evaluation/worker.py apm_support.py native_support.py /opt/evaluation/
