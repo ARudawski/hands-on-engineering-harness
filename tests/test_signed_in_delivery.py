@@ -46,11 +46,14 @@ class ConnectedDelivery(unittest.TestCase):
     def replay(self, payload, **kwargs):
         self.assertTrue(kwargs['delivery'].matches(payload))
         self.assertTrue(kwargs['candidate_run'])
+        messages=[{'thread_id':self.thread,'turn_id':self.turn,
+                   'item_id':'answer','text':'The sum is wrong: [1,2] should be 3.'}]
         return {'root_thread_id':self.thread,'cleanup_verified':True,'status':'observed_pending_assessment',
                 'elapsed_seconds':3.2,'candidate_observation':{'execution_end':'completed','safety':'no_observed_breach',
                 'participants':[{'thread_id':self.thread,'thread_configuration':{'model':None,'effort':None}}],
-                'subagent_coverage':'unknown','agent_messages':[{'thread_id':self.thread,'turn_id':self.turn,
-                     'item_id':'answer','text':'The sum is wrong: [1,2] should be 3.'}]}}
+                'subagent_coverage':'unknown','agent_messages':messages,
+                'completion':{'root':self.thread,'turn':self.turn,'generation':0,'artifact_sha256':'f'*64,
+                              'messages':messages,'observed_at':100,'elapsed_seconds':2}}}
 
     def run_delivery(self, **kwargs):
         return delivery.deliver(self.input,self.channel,root=self.root,origin=self.origin,
@@ -100,6 +103,41 @@ class ConnectedDelivery(unittest.TestCase):
         self.input['request_id']=str(uuid4());before=len(self.channel.events)
         self.assertEqual(self.run_delivery(runner=missing)['assessment']['verdict'],'unassessed')
         self.assertEqual(len(self.channel.events),before)
+
+    def test_integrity_failures_withhold_grade_but_optional_child_warning_does_not(self):
+        def warned(payload,**kwargs):
+            value=self.replay(payload,**kwargs)
+            value['candidate_observation']['behavior_warnings']=[{'kind':'turn_failed','thread_id':str(uuid4())}]
+            return value
+        self.assertEqual(self.run_delivery(runner=warned)['assessment']['verdict'],'pass')
+        changes=[('cleanup_verified',False),('source_drift',True),('candidate_input_drift',True),
+                 ('error_code','protected_disclosure')]
+        observations=[('infrastructure_limitations',['unattributed_events']),('safety','invalid'),
+                      ('pending_decisions',[{'kind':'question'}]),('completion',None)]
+        for target,key,value in [('result',k,v) for k,v in changes]+[('observation',k,v) for k,v in observations]:
+            self.input['request_id']=str(uuid4());count=len(self.channel.events)
+            def damaged(payload,**kwargs):
+                result=self.replay(payload,**kwargs)
+                (result if target=='result' else result['candidate_observation'])[key]=value
+                return result
+            with self.subTest(target=target,key=key):
+                report=self.run_delivery(runner=damaged)
+                self.assertEqual(report['assessment']['verdict'],'unassessed')
+                self.assertEqual(len(self.channel.events),count)
+
+    def test_retired_assessment_or_late_wait_cannot_reopen_or_grade_a_new_frame(self):
+        session=self.session()
+        first={'root':self.thread,'turn':self.turn,'artifact_sha256':'a'*64,'messages':['first']}
+        second={**first,'turn':str(uuid4()),'artifact_sha256':'b'*64,'messages':['second']}
+        session.provisional_assessment=(first['artifact_sha256'],{'verdict':'pass','reason':'old'})
+        with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+            session.final_assessment(second)
+        session.provisional_assessment=None
+        self.channel.answer=lambda e:{'status':'waiting','question':'Can I change the code?'}
+        result=session.final_assessment(second)
+        self.assertEqual(result['verdict'],'unassessed')
+        self.assertEqual(len(self.channel.events),1)
+        self.assertEqual(session.operator_wait['frame_sha256'],second['artifact_sha256'])
 
     def test_disconnect_during_assessment_retains_first_incomplete_report(self):
         original=self.channel.poll
@@ -275,9 +313,14 @@ class ConnectedDelivery(unittest.TestCase):
         with patch.object(native,'require_binding'):
             conn.send(value)
             with self.assertRaises(RuntimeError):conn.send(value)
-            self.channel.answer=lambda event:{'action':'continue','text':'Continue the read-only assessment.'}
-            observer=SimpleNamespace(root=self.thread,owner=conn.owner,snapshot=lambda end:{})
+            self.channel.answer=lambda event: ({'status':'waiting','question':'Continue assessment?'}
+                if event['kind']=='assessment' else {'action':'continue','text':'Continue the read-only assessment.'})
+            frame={'root':self.thread,'turn':self.turn,'artifact_sha256':'f'*64,'messages':['question']}
+            observer=SimpleNamespace(root=self.thread,owner=conn.owner,snapshot=lambda end:{},
+                seal_completion=lambda:frame,frame_current=lambda f:True,drain_observations=lambda:None,
+                retire_completion=Mock())
             self.assertEqual(session.completed_turn(observer,self.turn),'Continue the read-only assessment.')
+            observer.retire_completion.assert_called_once()
             conn.send(value)
             with self.assertRaises(RuntimeError):conn.send(value)
         self.assertEqual(conn._write.call_count,2)
@@ -288,17 +331,24 @@ class ActualRootGate(unittest.TestCase):
     session = ConnectedDelivery.session
     def gate_fixture(self):
         session=self.session();consumer=self.root/'consumer';consumer.mkdir();home=self.root/'home';home.mkdir()
-        from evaluation.signed_in_worker import CHECKS
+        from evaluation.signed_in_worker import CANDIDATE_CHECKS
+        from evaluation.signed_in_candidate import create_runtime_view
+        from native_support import inventory
+        full=self.root/'install';full.mkdir();(full/'AGENTS.md').write_text('deployed instructions')
+        consumer.rmdir()
+        installed={'files':inventory(full),'roles':{}}
+        view=create_runtime_view(full,consumer,installed)
         options={'windows.sandbox':'mxc','default_permissions':'har12-native',
             'permissions.har12-native.network.enabled':False,'model_provider':'openai',
             'cli_auth_credentials_store':'file','shell_environment_policy.inherit':'none',
             'allow_login_shell':False,'web_search':'disabled','features.skip_host_skill_discovery':True,
             'features.multi_agent_v2.non_code_mode_only':False,'features.multi_agent_v2.tool_namespace':'collaboration',
-            'permissions.har12-native.filesystem':{':root':'deny',str(home):'deny',':workspace_roots':{'.':'read','.tmp':'write'}}}
+            'permissions.har12-native.filesystem':{':root':'deny',str(home):'deny',str(full):'deny',':workspace_roots':{'.':'read','.tmp':'write'}}}
         options.update({'features.'+k:False for k in delivery.DISABLED})
-        result={'root_thread_id':self.thread,'revision':'a'*40,'command_gate':dict.fromkeys(CHECKS,True),
+        result={'root_thread_id':self.thread,'revision':'a'*40,'command_gate':dict.fromkeys(CANDIDATE_CHECKS,True),
                 'effective_configuration':dict.fromkeys(delivery.CONFIG_CHECKS,True),
-                'isolation_mcp_empty':True,'auth_mode':'chatgpt','installation':{'files':{}},'policy_sha256':'p'}
+                'isolation_mcp_empty':True,'auth_mode':'chatgpt','installation':installed,'policy_sha256':'p',
+                'installation_root':str(full),'consumer_view':view}
         with session.store.request(self.origin,self.request) as state:
             state.update(native_root=self.thread,native_purpose='candidate-observe',revision='a'*40,
                          delivery_payload={'candidate_revision':'a'*40})
@@ -309,7 +359,8 @@ class ActualRootGate(unittest.TestCase):
         with patch('native_support.digest',return_value='unassessed'):
             with self.assertRaisesRegex(RuntimeError,'candidate_executable_unassessed'):
                 session.admit(result,'codex',options,consumer,home)
-        with patch('native_support.digest',return_value=delivery.CODEX_SHA256),patch('evaluation.signed_in_candidate.verify_candidate'):
+        from native_support import digest
+        with patch('native_support.digest',side_effect=lambda p:digest(p) if Path(p).is_file() else delivery.CODEX_SHA256),patch('evaluation.signed_in_candidate.verify_candidate'):
             options['features.apps']=True
             with self.assertRaisesRegex(RuntimeError,'candidate_authority_changed'):
                 session.admit(result,'codex',options,consumer,home)
@@ -343,12 +394,25 @@ class NativePipeline(unittest.TestCase):
     def test_question_queued_during_metadata_reconciliation_is_forwarded(self):
         self.run_pipeline(False, 'queued_question')
 
+    def test_completed_answer_is_graded_after_assessor_cutoff_without_finish_or_second_checkpoint(self):
+        self.run_pipeline(False, 'late_assessment')
+
+    def test_message_queued_with_terminal_notification_is_part_of_the_graded_artifact(self):
+        self.run_pipeline(False, 'queued_message')
+
+    def test_changed_artifact_while_assessor_replies_cannot_reuse_old_grade(self):
+        self.run_pipeline(False, 'stale_assessment')
+
+    def test_native_question_arriving_during_assessment_is_forwarded_before_completion(self):
+        self.run_pipeline(False, 'assessment_question')
+
     def run_pipeline(self, deny, flow='finish'):
-        from evaluation.signed_in_worker import CHECKS
+        from evaluation.signed_in_worker import CANDIDATE_CHECKS
         import evaluation.signed_in_workflow as workflow
         project=self.root/'Harness/project';project.mkdir(parents=True)
         (project/'tests/evaluation').mkdir(parents=True)
         (project/'tests/evaluation/signed_in_worker.py').write_bytes((native.ROOT/'tests/evaluation/signed_in_worker.py').read_bytes())
+        (project/'tests/evaluation/signed_in_delivery.py').write_text('private rubric')
         home=self.root/'auth-home';home.mkdir()
         store=RequestStore(project/'.tmp/evaluation-signed-in')
         trace=[];outer=self
@@ -362,6 +426,8 @@ class NativePipeline(unittest.TestCase):
                 return ''
             def remaining(self,*args,**kwargs):
                 if flow=='deadline' and 'turn/start' in trace and not kwargs.get('cleanup'):
+                    raise TimeoutError()
+                if flow=='late_assessment' and outputs and not kwargs.get('cleanup'):
                     raise TimeoutError()
                 return 30
             def begin_cleanup(self,reason):trace.append(('stop',reason))
@@ -380,7 +446,7 @@ class NativePipeline(unittest.TestCase):
                 if method=='initialize':return {}
                 if method=='configRequirements/read':return {}
                 if method=='command/exec':
-                    checks=dict.fromkeys(CHECKS,True)
+                    checks=dict.fromkeys(CANDIDATE_CHECKS,True)
                     if deny:checks[next(iter(checks))]=False
                     return {'exitCode':0,'stdout':json.dumps(checks)}
                 if method=='thread/start':
@@ -406,6 +472,10 @@ class NativePipeline(unittest.TestCase):
                             'turn':{'id':turn,'status':'completed'}}}])
                     return {'turn':{'id':turn}}
                 if method=='thread/read':
+                    if flow=='queued_message' and not getattr(self,'queued',False):
+                        self.queued=True
+                        self.pending.append({'method':'item/completed','params':{'threadId':outer.thread,'turnId':outer.turn,
+                            'item':{'id':'queued_answer','type':'agentMessage','text':'For [] the result is1 instead of0.'}}})
                     if flow=='queued_question' and not getattr(self,'queued',False):
                         self.queued=True
                         self.pending.append({'id':7,'method':'item/tool/requestUserInput','params':{
@@ -421,13 +491,24 @@ class NativePipeline(unittest.TestCase):
         outputs=[]
         def answer(event):
             if event['kind']=='native_decision':return {'answers':{'q':{'answers':['Assess only']}}}
-            if event['kind']=='candidate_output':
+            if event['kind']=='operator_decision':
+                return {'action':'continue','text':'Continue the authorized assessment.'}
+            if event['kind']=='assessment':
                 outputs.append(event)
+                if flow=='assessment_question':
+                    wires[0].pending.append({'id':7,'method':'item/tool/requestUserInput','params':{
+                        'threadId':outer.thread,'turnId':outer.turn,'questions':[{'id':'q','question':'Scope?'}]}})
+                if flow=='stale_assessment':
+                    wires[0].pending.append({'method':'item/completed','params':{'threadId':outer.thread,'turnId':outer.turn,
+                        'item':{'id':'late_answer','type':'agentMessage','text':'Additional material changes the artifact.'}}})
                 if flow=='question_continue' and len(outputs)==1:
-                    return {'action':'continue','text':'Continue the authorized assessment.'}
-                return {'action':'finish'}
-            self.assertIn(('job_empty','completed'),trace)
+                    return {'status':'waiting','question':'May I continue the assessment?'}
             return {'verdict':'pass','reason':'Incorrect sum identified with a valid example.'}
+        wires=[]
+        original_init=Wire.__init__
+        def init(wire,*args,**kwargs):
+            original_init(wire,*args,**kwargs);wires.append(wire)
+        Wire.__init__=init
         channel=Channel(answer)
         if flow=='disconnect':
             def poll(seconds=.1):
@@ -438,6 +519,10 @@ class NativePipeline(unittest.TestCase):
         from native_support import digest as real_digest
         def fixture_digest(path):
             return real_digest(Path(path)) if Path(path).is_file() else delivery.CODEX_SHA256
+        def install(run,apm,consumer,*args):
+            from native_support import inventory
+            (consumer/'AGENTS.md').write_text('installed guidance')
+            return {'files':inventory(consumer,root_exclude=('.git','.tmp')),'roles':{}}
         with ExitStack() as stack:
             for target,kwargs in [
                 # Exercise the Windows controller through fake transports on
@@ -454,7 +539,7 @@ class NativePipeline(unittest.TestCase):
                 ('evaluation.signed_in_native.NativeConnection',{'new':Wire}),
                 ('native_support.digest',{'side_effect':fixture_digest}),
                 ('evaluation.signed_in_candidate.export_candidate',{'return_value':{'source':'fake'}}),
-                ('evaluation.signed_in_candidate.install_candidate',{'return_value':{'files':{},'roles':{}}}),
+                ('evaluation.signed_in_candidate.install_candidate',{'side_effect':install}),
                 ('evaluation.signed_in_candidate.verify_candidate',{}),
                 ('evaluation.signed_in_workflow.WindowsPathLocks',{'return_value':SimpleNamespace(close=lambda:True)})]:
                 stack.enter_context(patch(target,**kwargs))
@@ -472,19 +557,33 @@ class NativePipeline(unittest.TestCase):
         if deny:
             self.assertNotIn('turn/start',trace)
             self.assertEqual(report['execution_end'],'native_boundary_failed',trace)
-            self.assertEqual(list(project.parents[1].glob('.tmp/h12-n-*/consumer/case')),[])
+            self.assertEqual(list(project.parents[1].glob('.tmp/h12-n-*/work/case')),[])
         elif flow in ('disconnect','deadline'):
             self.assertEqual(report['execution_end'],'disconnected' if flow=='disconnect' else 'deadline', trace)
             self.assertEqual(report['assessment']['verdict'],'unassessed')
             self.assertIn('turn/interrupt',trace)
+        elif flow=='stale_assessment':
+            self.assertEqual(report['assessment']['verdict'],'unassessed',trace)
+            self.assertIn('candidate_observation_incomplete',report['limitations'])
         else:
             self.assertEqual(report['assessment']['verdict'],'pass',trace)
-            self.assertEqual(report['execution_end'],'completed')
+            self.assertEqual(report['execution_end'],'deadline' if flow=='late_assessment' else 'completed')
             self.assertIsNotNone(report['admission'])
+            self.assertIsNotNone(report['completion']['observed_at'])
+            self.assertFalse(any(e['kind']=='candidate_output' for e in channel.events))
+            if flow=='late_assessment':
+                self.assertEqual(len(outputs),1)
+                self.assertEqual(len(report['deliverable']),1)
+            if flow=='queued_message':
+                self.assertEqual(len(report['deliverable']),2)
+                self.assertEqual(outputs[0]['body']['completion']['messages'],report['deliverable'])
             if flow=='question_continue':
                 self.assertEqual(trace.count('turn/start'),2)
                 self.assertEqual(trace.count(('reply',7)),1)
             if flow=='queued_question':self.assertEqual(trace.count(('reply',7)),1)
+            if flow=='assessment_question':
+                self.assertEqual(trace.count(('reply',7)),1)
+                self.assertEqual(len(outputs),1)
         again=delivery.deliver(self.input,channel,root=project,origin=self.origin,
                                resolver=Mock(side_effect=AssertionError('resolved again')),
                                native_runner=Mock(side_effect=AssertionError('relaunch')))

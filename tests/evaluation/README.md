@@ -70,6 +70,11 @@ The internal `--prepare` path also accepts an explicit `candidate_revision`
 frozen into the request. Reusing a request with another candidate is rejected.
 Preparation exports the complete committed tree, including unpublished local
 feature commits, and uses an ordinary local-path stock-APM 0.35.0 dependency.
+The full installation/export stays private. A separate candidate workspace copies
+only its deployed `AGENTS.md`, `.agents/skills/` and `.codex/agents/` assets,
+with hashes and role paths bound to the verified installation. The command gate
+checks deployed reads and denied reads of actual grader/materialized answer files
+in both its process and subprocess. Gate helpers are removed before case release.
 Run candidate preparation with Python from the stock-APM 0.35.0 environment;
 it reuses APM's YAML and content-hash helpers. No remote publication, sign-in or
 model/account call is needed by the candidate installer.
@@ -113,7 +118,15 @@ assets remain immutable. The public task's assessment-only authority still appli
 
 Native questions/permission requests remain pending without an authorized answer;
 this adapter has no general automatic reply policy. Natural-language requests are
-retained for human assessment. Output reports task assessment (initially unassessed),
+retained for human assessment. A trusted post-turn assessment can identify a genuine
+prose question and request an authorized answer on the same live root. Completed
+assessments require no separate `finish` acknowledgement. The root completion time
+is captured before that checkpoint; the reconciled artifact and its digest bind the
+grade. Grading can finish after work cutoff on the original connection once native
+cleanup is verified, without reopening candidate work. Genuine decision waits and
+trusted assessment time are reported separately. Failed optional children remain
+behavior warnings; recovered root work can still be graded when integrity holds.
+Output reports task assessment (initially unassessed),
 execution end, pending decisions, infrastructure limitations and cleanup separately.
 Root completion alone does not establish child quiescence; native idle does not
 establish Job cleanup, and forced cleanup does not establish task completion.
@@ -127,8 +140,13 @@ without relaunch. Root configuration reported Luna/low; one root and no children
 were observed, with complete census and execution telemetry remaining unknown.
 This case did not exercise native callback replies, continuation, disconnect or
 active-descendant cancellation. Their retained source/component/replay evidence
-does not become a new live demonstration. The result supports the one-trial
-milestone, not a general harness improvement or universal isolation claim.
+does not become a new live demonstration. Subsequent review found answer hints
+in its readable full APM package (`tests/evaluation/probes.py`). The recorded
+answer and cleanup observations remain, but uncontaminated quality measurement
+and the one-trial acceptance milestone are **not established**. No evidence shows
+whether the model used those hints. The corrected private-install/workspace path
+needs its own separately authorized scored trial; the earlier result cannot
+validate it.
 
 `signed_in_native.py` now uses a dedicated native Windows Codex process and MXC
 command sandbox. It requires Codex's app-server APIs and native MXC enforcement,
@@ -648,7 +666,8 @@ thread settings are configuration; unavailable execution telemetry and complete
 subagent census remain unknown.
 
 While connected, stdout emits checkpoint objects containing origin, request,
-checkpoint UUID, kind, thread/turn IDs and a public `body`. The trusted invoking
+checkpoint UUID, kind, thread/turn IDs and a trusted-controller `body`. Assessment
+bodies contain a private rubric and must never be forwarded to the candidate. The invoking
 chat replies with those same identity fields, omitting `body` and adding a
 `response`. A native question takes `{"answers":{"<question id>":{"answers":["<answer>"]}}}`.
 Permission requests are forwarded, but this interface cannot expand the fixed
@@ -656,30 +675,41 @@ trial boundary: command/file callbacks support explicit `decline` or `cancel`;
 a permissions callback supports an empty turn-scoped grant. An attempted
 expansion is rejected. No approval is supplied automatically.
 
-A `candidate_output` checkpoint lets the operator finish with
-`{"action":"finish"}`, cancel, or continue the same completed root checkpoint
-with `{"action":"continue","text":"<authorized instruction>"}` inside the original
-budget. This supports ordinary harness stage approvals without prescribing its
-workflow. Stale/foreign replies are rejected. EOF closes admission and cleans
+A completed root produces an `assessment` checkpoint with its reconciled artifact,
+completion timestamp/digest and private rubric. Reply with
+`{"verdict":"pass|fail|unassessed","reason":"<supported rationale>"}` to finish the
+assessment directly. If the answer genuinely awaits a decision, reply with
+`{"status":"waiting","question":"<unresolved question>"}` instead. Only then does
+an `operator_decision` checkpoint accept
+`{"action":"continue","text":"<authorized answer>"}` on that same live root inside
+the original budget. Continuation retires the old artifact/grade. This supports
+ordinary harness stage approvals without prescribing a workflow or requiring a
+separate finish acknowledgement. Stale/foreign replies are rejected. EOF closes admission and cleans
 up; reconnect recovery is deferred. An origin/request-bound
 `{"origin":"<chat UUID>","request_id":"<request UUID>","action":"cancel"}` can cancel
 an active connection.
 
-After cleanup, an `assessment` checkpoint supplies the attributable public answer
-and private one-case rubric to the trusted invoking reviewer. Reply with
-`{"verdict":"pass|fail|unassessed","reason":"<supported rationale>"}`. The rubric
-never enters the candidate session. A missing review connection retains an
+Grades remain provisional until cleanup and integrity checks succeed. If the
+assessor misses the work cutoff, native work stops; the original unanswered
+assessment identity can still receive a grade for that same frozen artifact on
+the connected channel. A postcleanup question remains unassessed and cannot
+reopen native work. A missing review connection retains an
 unassessed first result. The final `result` is retained in the private request
-store with identities, elapsed time, identifiable controller waits, participant
+store with identities, elapsed time, genuine decision waits, separate trusted
+assessment time, root completion evidence, participant
 observations, answer, quality judgment and cleanup. Unobserved waits are marked
 unknown. Failed cleanup prevents acceptance; a wrong answer can be a valid
 measurement.
 
-Controlled transports and one real signed-in candidate trial cover this
-integration within the limits above. The first answer identified both incorrect
+Controlled transports cover the corrected protocol; a model-free native preparation
+checks the private-install/deployed-view command boundary. The earlier real
+signed-in trial used the old path. Its first answer identified both incorrect
 sum examples and passed the fixed rubric; an additional mistaken comment about
 the integer domain is retained as a behavior limitation. Normal completion and
-cleanup were observed; the earlier active-descendant stop evidence covers only
+cleanup were observed, but its readable full installation contained answer hints.
+Clean quality measurement and trial acceptance remain unestablished; there is no
+evidence whether those hints were used. No scored trial of this correction has
+run. The earlier active-descendant stop evidence covers only
 its validated mechanism. Starting another trial requires new scoped execution
 authorization. Legacy requests without a candidate still return the existing
 deployment-unavailable result.

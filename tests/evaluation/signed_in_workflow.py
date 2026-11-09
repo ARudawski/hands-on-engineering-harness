@@ -13,6 +13,7 @@ from pathlib import Path
 import queue
 import re
 import tomllib
+import time
 
 from evaluation.signed_in import identity
 from evaluation.signed_in_fixture import WindowsPathLocks
@@ -549,6 +550,9 @@ class CandidateObservation:
         self.turns, self.items, self.callbacks, self.resolved = {}, {}, {}, set()
         self.delivery, self.answered = delivery, set()
         self.callback_requests = {}
+        self.completion_times, self.frame_generation = {}, 0
+        self.completed_frame, self.current_root_turn = None, None
+        self.awaiting_followup = False
         self.threads[self.root]['thread_configuration'] = dict(result.get('thread_configuration', {}))
         self.buffer, self.messages, self.limitations = [], {}, set()
         self.bytes_seen = 0
@@ -690,8 +694,11 @@ class CandidateObservation:
                 self._problem()
             if not terminal:
                 self.turns[key] = status
-            if status == 'failed':
-                self.limitations.add('native_turn_failed')
+            if thread == self.root and status == 'completed':
+                observed = time.time()
+                elapsed = (max(0, observed-self.result['deadline']+self.result['seconds'])
+                           if 'deadline' in self.result and 'seconds' in self.result else None)
+                self.completion_times.setdefault(key, {'observed_at':observed, 'elapsed_seconds':elapsed})
             return
         if method not in ('item/started','item/completed'):
             return
@@ -744,8 +751,52 @@ class CandidateObservation:
             return False
         return (all(t['status'] == 'idle' and not t.get('waiting') for t in self.threads.values())
                 and all(s in ('completed','failed','interrupted') for s in self.turns.values())
-                and all(done for _,done in self.items.values())
+                and all(done or self.turns.get((t,u)) in ('failed','interrupted')
+                        for (t,u,_),(_,done) in self.items.items())
                 and self.callbacks.keys() <= self.resolved)
+
+    def begin_root_turn(self, turn):
+        self.current_root_turn = identity(turn)
+        self.awaiting_followup = False
+        self.turns[(self.root,self.current_root_turn)] = 'inProgress'
+
+    def retire_completion(self):
+        self.completed_frame = None
+        self.frame_generation += 1
+        self.awaiting_followup = True
+
+    def root_artifact(self):
+        return [{'thread_id':t,'turn_id':u,'item_id':i,'text':text}
+                for (t,u,i),text in self.messages.items() if t == self.root]
+
+    def seal_completion(self):
+        roots = [u for (t,u) in self.turns if t == self.root]
+        turn = self.current_root_turn or (roots[-1] if roots else None)
+        key = (self.root,turn)
+        if (self.awaiting_followup or self.turns.get(key) != 'completed' or self.buffer or self.limitations
+                or key not in self.completion_times
+                or any(not done for (t,u,_),(_,done) in self.items.items() if (t,u) == key)):
+            self.completed_frame = None
+            return None
+        artifact = self.root_artifact()
+        bound = {'root':self.root,'turn':turn,'generation':self.frame_generation,'messages':artifact}
+        digest = hashlib.sha256(json.dumps(bound,sort_keys=True).encode()).hexdigest()
+        frame = {**bound,'artifact_sha256':digest,**self.completion_times[key]}
+        self.completed_frame = frame
+        return frame
+
+    def frame_current(self, frame):
+        current = self.seal_completion()
+        return current is not None and current['artifact_sha256'] == frame['artifact_sha256']
+
+    def drain_observations(self, *, stopped=False):
+        if hasattr(self.connection,'drain_events'):
+            values = self.connection.drain_events(stopped=stopped)
+        else:
+            values = list(self.connection.pending)
+            self.connection.pending.clear()
+        for value in values:
+            self.feed(value)
 
     def snapshot(self, end):
         pending = [v for k,v in self.callbacks.items() if k not in self.resolved]
@@ -757,11 +808,16 @@ class CandidateObservation:
                       'question' if m == 'item/tool/requestUserInput' else 'permission'} for t,u,m in pending],
                   'participants': [{'thread_id':t,**v} for t,v in self.threads.items()],
                   'turns': [{'thread_id':t,'turn_id':u,'status':s} for (t,u),s in self.turns.items()],
+                  'behavior_warnings': [{'kind':'turn_failed','thread_id':t,'turn_id':u}
+                                        for (t,u),s in self.turns.items() if s == 'failed'],
                   'agent_messages': [{'thread_id':t,'turn_id':u,'item_id':i,'text':text}
                                      for (t,u,i),text in self.messages.items()],
                   'infrastructure_limitations': sorted(self.limitations),
                   'received_context_verified': False, 'live_child_configuration_verified': False,
                   'natural_language_decisions': 'human_assessment_required', 'primary_acceptance': False}
+        report['completion'] = self.completed_frame
+        report['root_turn_completions'] = [{'thread_id':t,'turn_id':u,**v}
+                                          for (t,u),v in self.completion_times.items()]
         # The live event stream attributes observed participants; it is not an
         # independent complete census of every runtime descendant.
         report['subagent_coverage'] = 'unknown'
@@ -783,7 +839,11 @@ class CandidateObservation:
         from native_support import digest
         if any(digest(self.fixture/p) != h for p,h in self.expected.items()):
             raise RuntimeError('candidate_input_changed')
-        if any(digest(self.consumer/p) != h for p,h in self.result['installation']['files'].items()):
+        if 'consumer_view' in self.result:
+            from evaluation.signed_in_candidate import verify_runtime_view
+            verify_runtime_view(Path(self.result['installation_root']), self.consumer,
+                                self.result['installation'], self.result['consumer_view'], case_available=True)
+        elif any(digest(self.consumer/p) != h for p,h in self.result['installation']['files'].items()):
             raise RuntimeError('candidate_installation_changed')
         if (self.consumer/'.codex/config.toml').exists():
             raise RuntimeError('candidate_installation_changed')
@@ -815,7 +875,7 @@ class CandidateObservation:
         self.save()
         try:
             turn = self.connection.call('turn/start', {'threadId':self.root,'input':[{'type':'text','text':prompt}]})['turn']['id']
-            self.turns[(self.root,identity(turn))] = 'inProgress'
+            self.begin_root_turn(turn)
             self.result.update(model_turn_started=True,evaluated_case_dispatched=True)
             while True:
                 self.owner.remaining()
@@ -828,8 +888,9 @@ class CandidateObservation:
                     pass
                 if any(t == self.root and s in ('completed','failed','interrupted') for (t,_),s in self.turns.items()):
                     self.reconcile()
-                    while self.connection.pending:
-                        self.observe_event(self.connection.pending.popleft())
+                    self.drain_observations()
+                    self.dispatch_decisions()
+                    self.seal_completion()
                     root_states = [s for (t,_),s in self.turns.items() if t == self.root]
                     if root_states[-1] == 'interrupted':
                         return self.snapshot('interrupted')
@@ -842,7 +903,10 @@ class CandidateObservation:
                                 self.delivery.check_connected()
                                 turn = self.connection.call('turn/start', {'threadId':self.root,
                                     'input':[{'type':'text','text':followup}]})['turn']['id']
-                                self.turns[(self.root,identity(turn))] = 'inProgress'
+                                self.begin_root_turn(turn)
+                                continue
+                            self.dispatch_decisions()
+                            if not self.complete():
                                 continue
                         return self.snapshot('completed')
                     if self.limitations:
@@ -859,6 +923,9 @@ class CandidateObservation:
 
     def observe_event(self, value):
         self.feed(value)
+        self.dispatch_decisions()
+
+    def dispatch_decisions(self):
         if self.delivery:
             for key, request in list(self.callback_requests.items()):
                 if key not in self.answered and key not in self.resolved:
@@ -873,9 +940,22 @@ class CandidateObservation:
                     self.limitations.add('native_interrupt_unconfirmed')
 
     def finalize_cleanup(self, verified, *, invalid=False):
+        if verified:
+            try:
+                self.drain_observations(stopped=True)
+                self.seal_completion()
+            except (RuntimeError, ValueError):
+                self.limitations.add('cleanup_observation_incomplete')
+                self.completed_frame = None
+                invalid = True
         report = self.result.get('candidate_observation')
         if report is not None:
+            latest = self.snapshot(report['execution_end'])
+            report.clear()
+            report.update(latest)
+            self.result['candidate_observation'] = report
             report.update(cleanup='verified' if verified else 'failed',
+                          completion=self.completed_frame,
                           safety='invalid' if invalid else 'no_observed_breach',
                           infrastructure_limitations=sorted(self.limitations),
                           active_descendant_cancellation_acceptance=False)

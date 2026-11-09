@@ -98,12 +98,12 @@ def python_read_paths():
     return {str(path): 'read' for path in paths}
 
 
-def command_gate_checks(response):
-    from evaluation.signed_in_worker import CHECKS
+def command_gate_checks(response, *, candidate=False):
+    from evaluation.signed_in_worker import CHECKS, CANDIDATE_CHECKS
     try:
         checks = json.loads(response.get('stdout', ''))
         if (type(response.get('exitCode')) is not int or response['exitCode'] != 0
-                or not isinstance(checks, dict) or checks.keys() != CHECKS
+                or not isinstance(checks, dict) or checks.keys() != (CANDIDATE_CHECKS if candidate else CHECKS)
                 or not all(value is True for value in checks.values())):
             raise ValueError()
     except (ValueError, TypeError, AttributeError):
@@ -463,26 +463,31 @@ class NativeConnection:
         self.request_methods={};self.last_rpc_error=None
         self.events, self.pending = queue.Queue(maxsize=512), deque()
         self.failed = threading.Event()
+        self.reader_failure = None
         def reader():
             total = 0
             while True:
                 line = self.process.stdout.readline(1024*1024+1)
                 total += len(line)
                 if not line or len(line) > 1024*1024 or total > 16*1024*1024:
+                    self.reader_failure = 'eof' if not line else 'protocol'
                     break
                 try:
                     value = json.loads(line)
                     if not isinstance(value, dict):
+                        self.reader_failure = 'protocol'
                         break
                     self.events.put_nowait(value)
                 except (ValueError, queue.Full):
+                    self.reader_failure = 'protocol'
                     break
             self.failed.set()
             try:
                 self.events.put_nowait({'protocol_error': True})
             except queue.Full:
                 pass
-        threading.Thread(target=reader, daemon=True).start()
+        self.reader_thread = threading.Thread(target=reader, daemon=True)
+        self.reader_thread.start()
 
     def send(self, value, *, cleanup=False):
         stops = {'command/exec/terminate', 'turn/interrupt',
@@ -567,6 +572,9 @@ class NativeConnection:
         if self.failed.is_set() and self.events.empty():
             raise RuntimeError('native_protocol_failed')
         value = self.events.get(timeout=self.owner.remaining(maximum, cleanup=cleanup))
+        return self.accept_event(value)
+
+    def accept_event(self, value):
         if value.get('protocol_error'):
             raise RuntimeError('native_protocol_failed')
         if 'id' in value and 'method' in value and getattr(self, 'interaction', None) is not None:
@@ -580,6 +588,23 @@ class NativeConnection:
                 raise RuntimeError('native_protocol_failed')
             self.replies[identity] = value
         return value
+
+    def drain_events(self, *, stopped=False):
+        if stopped:
+            self.reader_thread.join(timeout=.5)
+            if self.reader_thread.is_alive() or self.reader_failure not in (None, 'eof'):
+                raise RuntimeError('native_protocol_failed')
+        values = list(self.pending)
+        self.pending.clear()
+        while True:
+            try:
+                value = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if stopped and value.get('protocol_error'):
+                continue  # Expected EOF after independently verified owned-Job stop.
+            values.append(self.accept_event(value))
+        return values
 
     def wait(self, identity, *, cleanup=False):
         while identity not in self.replies:
@@ -847,10 +872,16 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
         result['apm_version'] = owner.run([apm, '--version'], cwd=consumer, env=apm_env, timeout=15).strip()
         owner.run(['git', '-c', 'init.templateDir=', 'init', '-q'], cwd=consumer, env=apm_env)
         if candidate:
-            from evaluation.signed_in_candidate import export_candidate, install_candidate
+            from evaluation.signed_in_candidate import export_candidate, install_candidate, create_runtime_view
             exported = export_candidate(owner.run, ROOT, request['revision'], trial/'candidate-source', apm_env)
             result['installation'] = install_candidate(owner.run, apm, consumer, exported, apm_env,
                                                        selection, result['apm_version'])
+            result['installation_root'] = str(consumer)
+            view = trial/'work'
+            result['consumer_view'] = create_runtime_view(consumer, view, result['installation'])
+            consumer = view
+            (consumer/'.tmp').mkdir()
+            result['consumer'] = str(consumer)
         else:
             owner.run([apm, 'install', 'ARudawski/hands-on-engineering-harness#'+request['revision'], '--target', 'codex'],
                       cwd=consumer, env=apm_env, timeout=120)
@@ -891,7 +922,18 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
                     return
         threading.Thread(target=accept_controls, daemon=True).start()
         paths = [str(p) for p in protected.iterdir()]+[str(undeclared)]
-        (consumer/'h12-inputs.json').write_text(json.dumps({'protected': paths, 'port': listener.getsockname()[1]}), encoding='utf-8')
+        probe_inputs = {'protected': paths, 'port': listener.getsockname()[1]}
+        if candidate:
+            answers = [ROOT/'tests/evaluation/signed_in_delivery.py']
+            if not answers[0].is_file():
+                raise RuntimeError('candidate_answer_file_unavailable')
+            for relative in ('tests/evaluation/probes.py', 'tests/evaluation/signed_in_delivery.py'):
+                target = Path(result['installation_root'])/'apm_modules/harness'/relative
+                if target.is_file():
+                    answers.append(target)
+            probe_inputs.update(answers=[str(p) for p in answers], deployed=str(consumer/'AGENTS.md'))
+            result['answer_file_controls'] = [{'path':str(p), 'sha256':digest(p)} for p in answers]
+        (consumer/'h12-inputs.json').write_text(json.dumps(probe_inputs), encoding='utf-8')
         positive = json.loads(owner.run([sys.executable, '-I', '-B', probe, 'positive'], cwd=consumer, env=env, timeout=10))
         if positive.keys() != {'local_network','external_network','dns'} or not all(v is True for v in positive.values()):
             raise RuntimeError('positive_control_failed')
@@ -900,6 +942,8 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
         result['configured_shell'] = str(shell)
         policy = {':root': 'deny', ':minimal': 'read', ':workspace_roots': {'.': 'read', '.tmp': 'write'},
                   **python_read_paths(), str(home): 'deny', str(out.parent): 'deny'}
+        if candidate:
+            policy[result['installation_root']] = 'deny'
         options = {'windows.sandbox': 'mxc', 'default_permissions': 'har12-native',
             'permissions.har12-native.filesystem': policy, 'permissions.har12-native.network.enabled': False,
             'shell_environment_policy.inherit': 'none', 'shell_environment_policy.set': native_env, 'allow_login_shell': False,
@@ -911,7 +955,7 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
             'features.skip_host_skill_discovery': True, 'web_search': 'disabled',
             'agents.default_subagent_model': model, 'agents.default_subagent_reasoning_effort': effort,
             'agents.max_concurrent_threads_per_session': 2, 'agents.max_depth': 1}
-        roles = result['installation']['roles'] if candidate else {
+        roles = result['consumer_view']['roles'] if candidate else {
             role: {'config_file': str(consumer/f'.codex/agents/{role}.toml'),
                    'description': 'Installed harness '+role} for role in ROLES}
         for role, configuration in roles.items():
@@ -927,9 +971,8 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
         result['policy_sha256'] = hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
         if candidate:
             result['installation']['runtime_options'] = options
-            if (any(digest(consumer/p) != h for p, h in result['installation']['files'].items())
-                    or (consumer/'.codex/config.toml').exists()):
-                raise RuntimeError('candidate_installation_changed')
+            from evaluation.signed_in_candidate import verify_runtime_view
+            verify_runtime_view(Path(result['installation_root']), consumer, result['installation'], result['consumer_view'], bootstrap=True)
         args = [codex, 'app-server', '--stdio']
         for key, value in options.items():
             args += ['-c', key+'='+toml_value(value)]
@@ -951,8 +994,16 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
                    'permissionProfile': 'har12-native', 'timeoutMs': int(owner.remaining(20)*1000),
                    'outputBytesCap': 8192, 'env': native_env}
         response = connection.call('command/exec', command)
-        checks = command_gate_checks(response)
+        checks = command_gate_checks(response, candidate=bool(candidate))
         result['command_gate'] = checks
+        if candidate_run:
+            # These trusted, temporary bootstrap files are not candidate inputs.
+            probe.unlink()
+            (consumer/'h12-inputs.json').unlink()
+            if public.resolve().parent != consumer.resolve() or public.name != 'h12-public':
+                raise RuntimeError('candidate_installation_changed')
+            shutil.rmtree(public)
+            verify_runtime_view(Path(result['installation_root']), consumer, result['installation'], result['consumer_view'])
         result['phase'] = 'thread_metadata'
         environments = [{'environmentId': 'local', 'cwd': str(consumer), 'runtimeWorkspaceRoots': [str(consumer)]}]
         info = connection.call('thread/start', {'model': model, 'modelProvider': 'openai', 'cwd': str(consumer),
@@ -1171,7 +1222,7 @@ def run_native(payload, *, mode, interaction_probe=False, isolation_probe=False,
             'candidate_source_changed', 'candidate_format_unsupported', 'candidate_installation_changed',
             'candidate_configuration_unsupported', 'candidate_profile_incompatible', 'candidate_apm_unsupported',
             'candidate_observation_incomplete', 'candidate_input_changed', 'evidence_limit',
-            'candidate_executable_unassessed', 'candidate_authority_changed', 'candidate_boundary_unverified',
+            'candidate_executable_unassessed', 'candidate_authority_changed', 'candidate_boundary_unverified', 'candidate_answer_file_unavailable',
             'controller_reply_rejected', 'controller_output_limit', 'permission_expansion_outside_trial', 'candidate_decision_unsupported',
             'positive_control_failed', 'native_protocol_failed', 'native_rpc_failed', 'native_callback_blocked', 'native_method_blocked',
             'native_boundary_failed', 'effective_configuration_changed', 'managed_sign_in_unavailable', 'admission_closed',

@@ -9,6 +9,7 @@ import sys
 import time
 
 CHECKS = {'task_write', 'protected_reads', 'protected_writes', 'local_network', 'external_network', 'dns', 'child'}
+CANDIDATE_CHECKS = CHECKS | {'deployed_reads', 'answer_reads'}
 CASE_READS = {'case-contract':'contract.md', 'case-before':'before.py', 'case-after':'after.py', 'case-plan':'plan.md'}
 
 
@@ -44,6 +45,19 @@ def inspect_reads(data, base):
 def probe(data, base, child=False, positive=False):
     checks = {}
     if not positive:
+        if 'answers' in data:
+            checks['deployed_reads'] = False
+            try:
+                checks['deployed_reads'] = bool(Path(data['deployed']).read_bytes())
+            except OSError:
+                pass
+            checks['answer_reads'] = bool(data['answers'])
+            for target in data['answers']:
+                try:
+                    Path(target).read_bytes()  # Read-only real answer-file denial check.
+                    checks['answer_reads'] = False
+                except OSError:
+                    pass
         try:
             path = base/'.tmp'/('child-write' if child else 'task-write')
             path.write_text('PUBLIC_ALLOWED', encoding='ascii')

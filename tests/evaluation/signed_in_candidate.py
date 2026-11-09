@@ -2,6 +2,7 @@
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import tarfile
 import tomllib
 
@@ -139,6 +140,50 @@ def verify_candidate(consumer, exported, selection):
 def consumer_manifest(source):
     return {'name': 'harness-evaluation', 'version': '0.0.0', 'targets': ['codex'],
             'dependencies': {'apm': [{'path': str(source), 'alias': 'harness'}]}}
+
+
+def create_runtime_view(full, view, installed):
+    """Expose deployed assets, never the complete installed package or its answers."""
+    full, view = Path(full), Path(view)
+    selected = {p:h for p,h in installed['files'].items()
+                if p == 'AGENTS.md' or p.startswith(('.agents/skills/', '.codex/agents/'))}
+    if 'AGENTS.md' not in selected:
+        raise RuntimeError('candidate_installation_changed')
+    view.mkdir()
+    for name, expected in selected.items():
+        source = full/name
+        if (not source.resolve().is_relative_to(full.resolve()) or source.is_symlink()
+                or digest(source) != expected):
+            raise RuntimeError('candidate_installation_changed')
+        target = view/name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    roles = {}
+    for name, role in installed['roles'].items():
+        relative = Path(role['config_file']).relative_to(full).as_posix()
+        if relative not in selected or not relative.startswith('.codex/agents/'):
+            raise RuntimeError('candidate_installation_changed')
+        roles[name] = {**role, 'config_file': str(view/relative)}
+    result = {'installation_root': str(full), 'files': selected, 'roles': roles}
+    verify_runtime_view(full, view, installed, result)
+    return result
+
+
+def verify_runtime_view(full, view, installed, exposed, *, case_available=False, bootstrap=False):
+    full, view = Path(full), Path(view)
+    expected = {p:h for p,h in installed['files'].items()
+                if p == 'AGENTS.md' or p.startswith(('.agents/skills/', '.codex/agents/'))}
+    excluded = ('.tmp',) + (('case',) if case_available else ())
+    if bootstrap:
+        excluded += ('h12-probe.py', 'h12-inputs.json', 'h12-public')
+    if (exposed.get('installation_root') != str(full) or exposed.get('files') != expected
+            or inventory(full, root_exclude=('.git', '.tmp')) != installed['files']
+            or inventory(view, root_exclude=excluded) != expected):
+        raise RuntimeError('candidate_installation_changed')
+    roles = {name:{**role, 'config_file':str(view/Path(role['config_file']).relative_to(full))}
+             for name,role in installed['roles'].items()}
+    if exposed.get('roles') != roles or (view/'apm_modules').exists() or (view/'.codex/config.toml').exists():
+        raise RuntimeError('candidate_installation_changed')
 
 
 def install_candidate(run, apm, consumer, exported, env, selection, version):

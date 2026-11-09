@@ -54,6 +54,49 @@ class OpenObservation(unittest.TestCase):
             self.assertEqual(report['task_assessment'],'unassessed')
             self.assertEqual(len(report['participants']),count+1)
 
+    def test_optional_child_failure_does_not_erase_recovered_root_assessment(self):
+        child,turn=str(uuid4()),str(uuid4())
+        self.observer.feed(self.child(child,'optional'))
+        self.observer.feed({'method':'item/started','params':{'threadId':child,'turnId':turn,
+            'item':{'id':'aborted_command','type':'commandExecution'}}})
+        self.observer.feed(self.turn_event(child,turn,'failed'))
+        self.observer.feed(self.message(self.root,self.turn,'After adds1: [2,3]6 instead of5.'))
+        self.observer.feed(self.turn_event(self.root,self.turn))
+        self.observer.reconcile()
+        self.assertTrue(self.observer.complete())
+        report=self.observer.snapshot('completed')
+        self.assertEqual(report['infrastructure_limitations'],[])
+        self.assertIn({'thread_id':child,'turn_id':turn,'status':'failed'},report['turns'])
+        self.assertEqual(report['behavior_warnings'],[{'kind':'turn_failed','thread_id':child,'turn_id':turn}])
+
+    def test_failed_earlier_root_can_recover_but_failed_or_incomplete_latest_root_has_no_frame(self):
+        self.observer.feed(self.turn_event(self.root,self.turn,'failed'))
+        self.assertIsNone(self.observer.seal_completion())
+        later=str(uuid4());self.observer.begin_root_turn(later)
+        self.observer.feed(self.message(self.root,later,'Correct recovered assessment'))
+        self.assertIsNone(self.observer.seal_completion())
+        self.observer.feed(self.turn_event(self.root,later));self.observer.reconcile()
+        self.assertTrue(self.observer.complete())
+        self.assertEqual(self.observer.seal_completion()['turn'],later)
+        self.assertEqual(self.observer.limitations,set())
+
+    def test_completion_time_is_immediate_but_frame_includes_queued_messages_and_is_retired(self):
+        with patch('evaluation.signed_in_workflow.time.time',return_value=123):
+            self.observer.feed(self.turn_event(self.root,self.turn))
+        self.connection.pending.append(self.message(self.root,self.turn,'Queued assessment'))
+        self.observer.reconcile();self.observer.drain_observations()
+        frame=self.observer.seal_completion()
+        self.assertEqual(frame['observed_at'],123)
+        self.assertEqual(frame['messages'][0]['text'],'Queued assessment')
+        self.observer.feed(self.message(self.root,self.turn,'Further output','later'))
+        self.assertFalse(self.observer.frame_current(frame))
+        self.observer.retire_completion()
+        self.assertIsNone(self.observer.seal_completion())
+        next_turn=str(uuid4());self.observer.begin_root_turn(next_turn)
+        self.assertIsNone(self.observer.seal_completion())
+        self.observer.feed(self.turn_event(self.root,next_turn,'failed'))
+        self.assertIsNone(self.observer.seal_completion())
+
     def test_root_and_child_snapshot_settings_survive_metadata_without_fields(self):
         self.result['thread_configuration']={'model':'requested-root','effort':'low'}
         observer=CandidateObservation(self.connection,self.result,lambda:None,consumer=self.consumer,marker='PROTECTED_CANARY')

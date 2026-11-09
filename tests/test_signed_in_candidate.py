@@ -139,6 +139,12 @@ class CandidatePreparation(unittest.TestCase):
             self.assertEqual(receipt['source_files'], receipt['materialized_files'])
             self.assertIn('AGENTS.md', receipt['files'])
             self.assertIn('apm.lock.yaml', receipt['files'])
+            view=self.root/f'work-{number}'
+            exposed=candidate.create_runtime_view(consumer,view,receipt)
+            candidate.verify_runtime_view(consumer,view,receipt,exposed)
+            self.assertFalse((view/'apm_modules').exists())
+            self.assertFalse((view/'apm.yml').exists())
+            self.assertEqual((view/'AGENTS.md').read_bytes(),(consumer/'AGENTS.md').read_bytes())
             config = consumer/'.codex/agents'/('reviewer.toml' if number == 0 else 'specialist.toml')
             original = config.read_bytes()
             for content in [original+b'permissions = "unsafe"\n', original.replace(b'candidate', b'forged')]:

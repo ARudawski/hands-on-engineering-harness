@@ -100,7 +100,11 @@ class Delivery:
     def __init__(self, store, origin, request, channel):
         self.store, self.origin, self.request, self.channel = store, origin, request, channel
         self.wait_seconds = 0.0
+        self.assessment_seconds = 0.0
         self.checkpoints = []
+        self.pending_assessment = None
+        self.provisional_assessment = None
+        self.operator_wait = None
 
     def matches(self, payload):
         with self.store.request(self.origin, self.request) as state:
@@ -114,10 +118,16 @@ class Delivery:
                 raise InterruptedError('operator_cancelled')
             raise ValueError('controller_reply_rejected')
 
-    def checkpoint(self, kind, body, *, owner=None, thread=None, turn=None):
-        token = {'origin': self.origin, 'request_id': self.request, 'checkpoint': str(uuid4()),
-                 'kind': kind, 'thread_id': thread, 'turn_id': turn}
-        self.channel.emit({**token, 'body': body}, timeout=min(1, owner.remaining()) if owner else 1)
+    def checkpoint(self, kind, body, *, owner=None, thread=None, turn=None, pending=None, observe=None):
+        token = pending['token'] if pending else {
+            'origin': self.origin, 'request_id': self.request, 'checkpoint': str(uuid4()),
+            'kind': kind, 'thread_id': thread, 'turn_id': turn}
+        if token['checkpoint'] in self.checkpoints:
+            raise ValueError('controller_reply_rejected')
+        if pending is None or not pending.get('emitted'):
+            self.channel.emit({**token, 'body': body}, timeout=min(1, owner.remaining()) if owner else 1)
+            if pending is not None:
+                pending['emitted'] = True
         started = time.monotonic()
         try:
             while True:
@@ -125,6 +135,8 @@ class Delivery:
                     owner.remaining()
                 elif time.monotonic()-started > 60:
                     raise TimeoutError('controller_reply_timeout')
+                if observe:
+                    observe()
                 reply = self.channel.poll()
                 if reply is None:
                     continue
@@ -137,14 +149,16 @@ class Delivery:
                 self.checkpoints.append(token['checkpoint'])
                 return reply['response']
         finally:
-            if owner:
+            if kind == 'assessment':
+                self.assessment_seconds += time.monotonic()-started
+            elif owner:
                 self.wait_seconds += time.monotonic()-started
 
     def admit(self, result, codex, options, consumer, home):
         """Bind reviewed source mechanisms to this actual root before case release."""
-        from evaluation.signed_in_worker import CHECKS
+        from evaluation.signed_in_worker import CANDIDATE_CHECKS
         from native_support import digest
-        from evaluation.signed_in_candidate import verify_candidate
+        from evaluation.signed_in_candidate import verify_candidate, verify_runtime_view
         consumer, home = Path(consumer), Path(home)
         if digest(Path(codex)) != CODEX_SHA256:
             raise RuntimeError('candidate_executable_unassessed')
@@ -162,15 +176,19 @@ class Delivery:
             raise RuntimeError('candidate_authority_changed')
         policy = options.get('permissions.har12-native.filesystem', {})
         if (policy.get(':root') != 'deny' or policy.get(str(home)) != 'deny'
-                or policy.get(':workspace_roots') != {'.': 'read', '.tmp': 'write'}):
+                or policy.get(':workspace_roots') != {'.': 'read', '.tmp': 'write'}
+                or policy.get(result.get('installation_root')) != 'deny'
+                or Path(result.get('installation_root', consumer)).resolve() == consumer.resolve()):
             raise RuntimeError('candidate_authority_changed')
-        if (result.get('command_gate', {}).keys() != CHECKS
+        if (result.get('command_gate', {}).keys() != CANDIDATE_CHECKS
                 or not all(v is True for v in result['command_gate'].values())
                 or any(result.get('effective_configuration', {}).get(k) is not True for k in CONFIG_CHECKS)
                 or result.get('isolation_mcp_empty') is not True or result.get('auth_mode') != 'chatgpt'):
             raise RuntimeError('candidate_boundary_unverified')
         # Re-derive the install from the frozen export; no caller-installed catalogue is trusted.
-        verify_candidate(consumer, result['installation'], {'model': 'gpt-6-luna', 'effort': 'low'})
+        full = Path(result['installation_root'])
+        verify_candidate(full, result['installation'], {'model': 'gpt-6-luna', 'effort': 'low'})
+        verify_runtime_view(full, consumer, result['installation'], result['consumer_view'])
         with self.store.request(self.origin, self.request) as state:
             if (not state['admission_open'] or state.get('native_root') != result.get('root_thread_id')
                     or state.get('native_purpose') != 'candidate-observe'
@@ -179,7 +197,8 @@ class Delivery:
             proof = {'root': state['native_root'], 'revision': state['revision'],
                      'executable_sha256': CODEX_SHA256, 'source_ref': SOURCE_REF,
                      'policy_sha256': result['policy_sha256'],
-                     'installation_sha256': hashlib.sha256(json.dumps(result['installation']['files'], sort_keys=True).encode()).hexdigest()}
+                     'installation_sha256': hashlib.sha256(json.dumps(result['installation']['files'], sort_keys=True).encode()).hexdigest(),
+                     'view_sha256': hashlib.sha256(json.dumps(result['consumer_view']['files'], sort_keys=True).encode()).hexdigest()}
             state['candidate_admission'] = proof
         result['candidate_admission'] = proof
         result['boundary_passed'] = True
@@ -219,13 +238,31 @@ class Delivery:
         observer.connection.respond(value, response)
 
     def completed_turn(self, observer, turn):
-        report = observer.snapshot('awaiting_operator')
-        response = self.checkpoint('candidate_output', report, owner=observer.owner,
-                                   thread=observer.root, turn=turn)
-        if response == {'action': 'finish'}:
+        frame = observer.seal_completion()
+        if frame is None or not frame['messages']:
+            raise RuntimeError('candidate_observation_incomplete')
+        observer.snapshot('awaiting_assessment')
+        if self.provisional_assessment:
+            if self.provisional_assessment[0] != frame['artifact_sha256']:
+                raise RuntimeError('candidate_observation_incomplete')
             return None
-        if response == {'action': 'cancel'}:
-            raise InterruptedError('operator_cancelled')
+        pending = self.assessment_request(frame)
+        response = self.checkpoint('assessment', pending['body'], owner=observer.owner,
+                                   pending=pending, observe=observer.drain_observations)
+        if not observer.frame_current(frame):
+            raise RuntimeError('candidate_observation_incomplete')
+        if isinstance(response, dict) and response.keys() == {'verdict', 'reason'}:
+            self.provisional_assessment = (frame['artifact_sha256'], self.verdict(response))
+            self.pending_assessment = None
+            return None
+        if not isinstance(response, dict) or response.keys() != {'status', 'question'} or response['status'] != 'waiting':
+            raise ValueError('controller_reply_rejected')
+        self.pending_assessment = None
+        self.operator_wait = {'frame_sha256':frame['artifact_sha256'], 'question':text(response['question'])}
+        response = self.checkpoint('operator_decision', self.operator_wait, owner=observer.owner,
+                                   thread=observer.root, turn=turn, observe=observer.drain_observations)
+        if not observer.frame_current(frame):
+            raise RuntimeError('candidate_observation_incomplete')
         if not isinstance(response, dict) or response.keys() != {'action', 'text'} or response['action'] != 'continue':
             raise ValueError('controller_reply_rejected')
         followup = text(response['text'])
@@ -233,7 +270,49 @@ class Delivery:
             if not state['admission_open'] or state.get('candidate_turn_intent'):
                 raise ValueError('controller_reply_rejected')
             state['candidate_turn_intent'] = {'root': observer.root, 'checkpoint_turn': turn}
+        observer.retire_completion()
+        self.provisional_assessment = None
+        self.operator_wait = None
         return followup
+
+    @staticmethod
+    def verdict(response):
+        if (not isinstance(response, dict) or response.keys() != {'verdict', 'reason'}
+                or response['verdict'] not in ('pass', 'fail', 'unassessed')):
+            raise ValueError('controller_reply_rejected')
+        return {'verdict':response['verdict'], 'reason':text(response['reason'], 4096)}
+
+    def assessment_request(self, frame):
+        pending = self.pending_assessment
+        if pending and pending['frame']['artifact_sha256'] != frame['artifact_sha256']:
+            raise ValueError('controller_reply_rejected')
+        if pending is None:
+            token = {'origin':self.origin, 'request_id':self.request, 'checkpoint':str(uuid4()),
+                     'kind':'assessment', 'thread_id':frame['root'], 'turn_id':frame['turn']}
+            pending = {'token':token, 'frame':frame, 'body':{
+                'case_revision':'native-foundation-v2', 'completion':frame,
+                'rubric':'Pass: identifies the incorrect sum with code or a correct example. '
+                         'Fail: completed assessment misses the defect or omits support. Otherwise unassessed.',
+                'genuine_question_response':{'status':'waiting','question':'Describe the unresolved question.'}}}
+            self.pending_assessment = pending
+        return pending
+
+    def final_assessment(self, frame):
+        if self.operator_wait:
+            return {'verdict':'unassessed','reason':'A genuine operator decision remains unresolved.'}
+        if self.provisional_assessment:
+            digest, verdict = self.provisional_assessment
+            if digest != frame['artifact_sha256']:
+                raise ValueError('controller_reply_rejected')
+            return verdict
+        pending = self.assessment_request(frame)
+        # Native work has stopped. Only a grade for the same sealed artifact is accepted.
+        response = self.checkpoint('assessment', pending['body'], pending=pending)
+        self.pending_assessment = None
+        if isinstance(response, dict) and response.keys() == {'status','question'} and response['status'] == 'waiting':
+            self.operator_wait = {'frame_sha256':frame['artifact_sha256'],'question':text(response['question'])}
+            return {'verdict':'unassessed','reason':'A genuine operator decision remains unresolved after cleanup.'}
+        return self.verdict(response)
 
 
 def run_command(command, *, cwd, env, timeout=15):
@@ -332,17 +411,14 @@ def deliver(payload, channel, *, root, origin, native_runner=None, resolver=reso
     observation = result.get('candidate_observation', {})
     messages = observation.get('agent_messages', [])
     deliverable = [m for m in messages if m.get('thread_id') == result.get('root_thread_id')]
+    frame = observation.get('completion')
     try:
-        if (result.get('cleanup_verified') is True and observation.get('execution_end') == 'completed'
+        if (result.get('cleanup_verified') is True and frame and frame.get('root') == result.get('root_thread_id')
+                and frame.get('messages') == deliverable and deliverable
                 and not result.get('source_drift') and not result.get('candidate_input_drift') and not result.get('error_code')
-                and observation.get('safety') != 'invalid' and deliverable):
-            response = session.checkpoint('assessment', {'case_revision': 'native-foundation-v2',
-                'deliverable': deliverable, 'rubric': 'Pass: identifies the incorrect sum with code or a correct example. '
-                'Fail: completed assessment misses the defect or omits support. Otherwise unassessed.'})
-            if (not isinstance(response, dict) or response.keys() != {'verdict', 'reason'}
-                    or response['verdict'] not in ('pass', 'fail', 'unassessed')):
-                raise ValueError('controller_reply_rejected')
-            verdict = {'verdict': response['verdict'], 'reason': text(response['reason'], 4096)}
+                and not observation.get('infrastructure_limitations') and not observation.get('pending_decisions')
+                and observation.get('safety') != 'invalid'):
+            verdict = session.final_assessment(frame)
     except (ValueError, ConnectionError, TimeoutError, InterruptedError):
         verdict = {'verdict': 'unassessed', 'reason': 'Trusted assessment unavailable on the original connection.'}
         failure = 'assessment_unavailable'
@@ -353,7 +429,10 @@ def deliver(payload, channel, *, root, origin, native_runner=None, resolver=reso
                   'execution_end': observation.get('execution_end', result.get('error_code', failure or 'prelaunch_rejected')),
                   'elapsed_seconds': result.get('elapsed_seconds', round(max(0, state['seconds']-(state['deadline']-store.clock()[0])),3)),
                   'identifiable_wait_seconds': round(session.wait_seconds, 3),
-                  'wait_coverage': 'connected controller checkpoints; other waits unknown',
+                  'trusted_assessment_seconds': round(session.assessment_seconds, 3),
+                  'wait_coverage': 'native questions/permissions and genuine prose decisions; other waits unknown',
+                  'completion': frame, 'operator_wait': session.operator_wait,
+                  'behavior_warnings': observation.get('behavior_warnings', []),
                   'requested_root_default': {'model': 'gpt-6-luna', 'effort': 'low'},
                   'participants': observation.get('participants', []), 'subagent_coverage': observation.get('subagent_coverage', 'unknown'),
                   'evidence': str(store.path.parent/state['attempt_id']/'receipt.json'),
