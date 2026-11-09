@@ -689,6 +689,20 @@ up; reconnect recovery is deferred. An origin/request-bound
 `{"origin":"<chat UUID>","request_id":"<request UUID>","action":"cancel"}` can cancel
 an active connection.
 
+If the encoded assessment exceeds the channel limit, its body carries
+`completion_reference` instead of inline messages/context. This points to an
+exclusive private UTF-8 JSON artifact under the trusted request's attempt directory,
+with byte count, SHA256 and attempt ID. The artifact binds the exact checkpoint,
+origin/request, root/turn and complete frame, including generation/digest/timing.
+Use `read_assessment_reference(event)` from the trusted `signed_in_delivery` module,
+or equivalent byte/hash/binding verification, to read the entire answer and context
+before assessing it. Never forward this private artifact to the candidate.
+Both a verdict and a waiting response must additionally include
+`"retained_sha256":"<completion_reference.sha256>"`. The controller re-verifies the
+file and acknowledgement before accepting either response. Missing, changed or
+foreign evidence cannot receive a grade. An unanswered late assessment reuses the
+same token and retained file after cleanup; continuation requires a fresh identity.
+
 Each completion grades only messages attributable to its current root turn.
 Earlier root messages are separately identified as assessment context and remain
 in private evidence. An empty completed follow-up is unassessed; its predecessor's
@@ -717,7 +731,8 @@ identity, outcome, timing, assessment, cleanup and the existing `evidence` path.
 Read that private native receipt for full output/history; the original full
 delivery result stays in the request store. Duplicate retrieval uses the same
 bounded projection without relaunch or rewriting old receipts. Other checkpoint
-messages retain their size validation and one-use authorization requirements.
+messages retain their size validation and one-use authorization requirements;
+oversized assessments use the complete-content reference described above.
 
 Controlled transports cover the corrected protocol; a model-free native preparation
 checks the private-install/deployed-view command boundary. The earlier real

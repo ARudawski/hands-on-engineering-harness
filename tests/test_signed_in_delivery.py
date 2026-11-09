@@ -3,6 +3,7 @@ from collections import deque
 from io import StringIO
 from contextlib import ExitStack
 import json
+import hashlib
 import os
 import queue
 from pathlib import Path
@@ -42,7 +43,13 @@ class ConnectedDelivery(unittest.TestCase):
         self.input = {'request_id':self.request,'case':'native-foundation','seconds':120,
                       'profile_id':self.profile,'candidate_ref':'feature/candidate'}
         self.resolve = Mock(return_value='a'*40)
-        self.channel = Channel(lambda event: {'verdict':'pass','reason':'The answer identifies the wrong sum with [1,2].'})
+        def assess(event):
+            response={'verdict':'pass','reason':'The answer identifies the wrong sum with [1,2].'}
+            if event['body'].get('completion_reference'):
+                delivery.read_assessment_reference(event)
+                response['retained_sha256']=event['body']['completion_reference']['sha256']
+            return response
+        self.channel = Channel(assess)
 
     def replay(self, payload, **kwargs):
         self.assertTrue(kwargs['delivery'].matches(payload))
@@ -137,6 +144,124 @@ class ConnectedDelivery(unittest.TestCase):
                     wires.append(raw)
                 self.assertEqual(wires[0],wires[1])
                 self.assertEqual(self.run_delivery(runner=Mock(side_effect=AssertionError('relaunch'))),first)
+
+    def test_unicode_answer_crosses_real_grading_channel_then_result_and_duplicate(self):
+        answer='\U0001f642'*16384
+        incoming,outgoing=queue.Queue(),queue.Queue();received=[];errors=[]
+        class Reader:
+            def readline(self,size):return incoming.get(timeout=5)
+        class Writer:
+            def write(self,value):outgoing.put(value)
+            def flush(self):pass
+        self.channel=delivery.JsonChannel(Reader(),Writer())
+        def grader():
+            try:
+                for _ in range(3):
+                    raw=outgoing.get(timeout=3);self.assertLessEqual(len(raw.encode('ascii')),131072)
+                    event=json.loads(raw);received.append(event)
+                    if event['kind']=='assessment':
+                        ref=event['body']['completion_reference']
+                        data=Path(ref['path']).read_bytes()
+                        self.assertEqual(hashlib.sha256(data).hexdigest(),ref['sha256'])
+                        self.assertEqual(len(data),ref['bytes'])
+                        frame=delivery.read_assessment_reference(event)
+                        self.assertTrue(frame['messages'][0]['text']==answer)
+                        self.assertEqual(len(frame['messages'][0]['text'].encode('utf-8')),65536)
+                        reply={k:v for k,v in event.items() if k!='body'}
+                        reply['response']={'verdict':'pass','reason':'Complete retained answer verified.',
+                                           'retained_sha256':ref['sha256']}
+                        incoming.put(json.dumps(reply)+'\n')
+            except Exception as error:
+                errors.append(error);incoming.put('')
+        peer=threading.Thread(target=grader,daemon=True);peer.start()
+        def runner(payload,**kwargs):
+            result=self.replay(payload,**kwargs)
+            frame=result['candidate_observation']['completion'];frame['messages'][0]['text']=answer
+            observer=SimpleNamespace(root=self.thread,owner=SimpleNamespace(remaining=lambda:30),
+                seal_completion=lambda:frame,snapshot=lambda end:None,frame_current=lambda f:f==frame,
+                drain_observations=lambda:None)
+            self.assertIsNone(kwargs['delivery'].completed_turn(observer,self.turn))
+            return result
+        try:
+            first=self.run_delivery(runner=runner)
+            self.assertEqual(first['assessment']['verdict'],'pass')
+            self.channel.emit({'kind':'result','body':first})
+            again=self.run_delivery(runner=Mock(side_effect=AssertionError('relaunch')))
+            self.channel.emit({'kind':'result','body':again})
+            peer.join(3);self.assertFalse(peer.is_alive());self.assertEqual(errors,[])
+            self.assertEqual([e['kind'] for e in received],['assessment','result','result'])
+            self.assertEqual(received[1],received[2])
+            self.assertEqual(received[1]['body']['assessment'],first['assessment'])
+            self.assertTrue(received[1]['body']['details_omitted'])
+            self.assertTrue(first['deliverable'][0]['text']==answer)
+        finally:
+            incoming.put('');peer.join(3)
+
+    def large_frame(self):
+        return {'root':self.thread,'turn':self.turn,'generation':0,'artifact_sha256':'a'*64,
+            'observed_at':100,'elapsed_seconds':2,'context':[],
+            'messages':[{'thread_id':self.thread,'turn_id':self.turn,'item_id':'answer','text':'\U0001f642'*16384}]}
+
+    def test_reference_rejects_changed_bytes_foreign_binding_and_missing_acknowledgement(self):
+        session=self.session();frame=self.large_frame();pending=session.assessment_request(frame)
+        event={**pending['token'],'body':pending['body']};ref=event['body']['completion_reference']
+        reply={'verdict':'pass','reason':'Verified.','retained_sha256':ref['sha256']}
+        self.assertEqual(session.assessment_reply(pending,reply),{'verdict':'pass','reason':'Verified.'})
+        for invalid in ({'verdict':'pass','reason':'Missing acknowledgement.'},{**reply,'retained_sha256':'0'*64}):
+            with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+                session.assessment_reply(pending,invalid)
+        for key,value in [('origin',str(uuid4())),('turn_id',str(uuid4()))]:
+            with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+                delivery.read_assessment_reference({**event,key:value})
+        forged=json.loads(json.dumps(event));forged['body']['completion_reference']['attempt_id']=str(uuid4())
+        with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+            delivery.read_assessment_reference(forged)
+        forged=json.loads(json.dumps(event));forged['body']['completion']['generation']=1
+        with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+            delivery.read_assessment_reference(forged)
+        path=Path(ref['path']);path.write_bytes(path.read_bytes()+b' ')
+        with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+            session.assessment_reply(pending,reply)
+        path.unlink()
+        with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+            session.assessment_reply(pending,reply)
+
+    def test_reference_late_grade_reuses_same_file_and_unanswered_checkpoint_after_cleanup(self):
+        session=self.session();frame=self.large_frame()
+        owner=SimpleNamespace(remaining=Mock(side_effect=[30,TimeoutError()]))
+        observer=SimpleNamespace(root=self.thread,owner=owner,seal_completion=lambda:frame,
+            snapshot=lambda end:None,drain_observations=lambda:None,frame_current=lambda f:True)
+        with self.assertRaises(TimeoutError):session.completed_turn(observer,self.turn)
+        pending=session.pending_assessment;path=Path(pending['body']['completion_reference']['path'])
+        before=path.read_bytes()
+        session.store.stop(self.origin,self.request,'completed');session.store.cleanup(self.origin,self.request,True)
+        self.assertEqual(session.final_assessment(frame)['verdict'],'pass')
+        self.assertEqual(len(self.channel.events),1)
+        self.assertEqual(path.read_bytes(),before)
+        self.assertEqual(session.checkpoints,[pending['token']['checkpoint']])
+
+    def test_referenced_question_continuation_uses_a_fresh_bound_artifact(self):
+        session=self.session();frame=self.large_frame();frame['messages'][0]['text']='\u2028'*21844
+        observer=SimpleNamespace(root=self.thread,owner=SimpleNamespace(remaining=lambda:30),
+            seal_completion=lambda:frame,snapshot=lambda end:None,drain_observations=lambda:None,
+            frame_current=lambda f:True,retire_completion=Mock())
+        def answer(event):
+            if event['kind']=='operator_decision':return {'action':'continue','text':'Finish the assessment.'}
+            delivery.read_assessment_reference(event)
+            return {'status':'waiting','question':'Continue?',
+                    'retained_sha256':event['body']['completion_reference']['sha256']}
+        self.channel.answer=answer
+        self.assertEqual(session.completed_turn(observer,self.turn),'Finish the assessment.')
+        observer.retire_completion.assert_called_once();self.assertIsNone(session.pending_assessment)
+        first=self.channel.events[0]
+        next_turn=str(uuid4());next_frame={**frame,'turn':next_turn,'generation':1,'artifact_sha256':'b'*64,
+            'context':frame['messages'],'messages':[{'thread_id':self.thread,'turn_id':next_turn,'item_id':'new','text':'Done'}]}
+        next_pending=session.assessment_request(next_frame)
+        self.assertNotEqual(next_pending['token']['checkpoint'],first['checkpoint'])
+        self.assertNotEqual(next_pending['body']['completion_reference']['path'],first['body']['completion_reference']['path'])
+        with self.assertRaisesRegex(ValueError,'controller_reply_rejected'):
+            session.assessment_reply(next_pending,{'verdict':'pass','reason':'Old evidence.',
+                'retained_sha256':first['body']['completion_reference']['sha256']})
 
     def test_oversize_legacy_result_is_projected_without_rewriting_its_receipt(self):
         first=self.run_delivery()

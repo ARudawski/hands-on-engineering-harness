@@ -19,6 +19,32 @@ DISABLED = ('apps', 'plugins', 'memories', 'goals', 'view_image', 'image_generat
             'browser_use', 'computer_use', 'in_app_browser', 'shell_snapshot')
 CONFIG_CHECKS = {'provider_matches', 'approval_policy_matches', 'human_approval_reviewer',
                  'profile_matches', 'only_consumer_guidance', 'workspace_matches', 'environment_matches'}
+CHANNEL_BYTES = 131072
+
+
+def encode_message(value):
+    return (json.dumps(value, ensure_ascii=True)+'\n').encode('ascii')
+
+
+def read_assessment_reference(event):
+    """Trusted grader reads the complete retained frame and verifies its binding."""
+    try:
+        body = event['body']; reference = body['completion_reference']
+        raw = Path(reference['path']).read_bytes()
+        if len(raw) != reference['bytes'] or hashlib.sha256(raw).hexdigest() != reference['sha256']:
+            raise ValueError()
+        retained = json.loads(raw)
+        token = {k:v for k,v in event.items() if k != 'body'}
+        frame = retained['completion']
+        metadata = {k:v for k,v in frame.items() if k not in ('messages','context')}
+        if (event['kind'] != 'assessment' or retained['binding'] != token
+                or retained['attempt_id'] != reference['attempt_id']
+                or metadata != body['completion'] or frame['root'] != token['thread_id']
+                or frame['turn'] != token['turn_id']):
+            raise ValueError()
+        return frame
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise ValueError('controller_reply_rejected') from None
 
 
 def text(value, limit=65536):
@@ -72,8 +98,8 @@ class JsonChannel:
         threading.Thread(target=read, daemon=True).start()
 
     def emit(self, value, *, timeout=1):
-        encoded = (json.dumps(value, ensure_ascii=True)+'\n').encode('ascii')
-        if (len(encoded) > 131072 and value.get('kind') == 'result'
+        encoded = encode_message(value)
+        if (len(encoded) > CHANNEL_BYTES and value.get('kind') == 'result'
                 and isinstance(value.get('body'), dict) and value['body'].get('evidence')):
             report = value['body']
             fields = ('origin','request_id','attempt_id','candidate_revision','case','case_revision',
@@ -86,8 +112,8 @@ class JsonChannel:
                 summary['completion'] = {k:completion[k] for k in (
                     'root','turn','generation','artifact_sha256','observed_at','elapsed_seconds') if k in completion}
             summary['details_omitted'] = True
-            encoded = (json.dumps({'kind':'result','body':summary},ensure_ascii=True)+'\n').encode('ascii')
-        if len(encoded) > 131072:
+            encoded = encode_message({'kind':'result','body':summary})
+        if len(encoded) > CHANNEL_BYTES:
             raise ValueError('controller_output_limit')
         complete, failed = threading.Event(), threading.Event()
         try:
@@ -265,6 +291,7 @@ class Delivery:
         pending = self.assessment_request(frame)
         response = self.checkpoint('assessment', pending['body'], owner=observer.owner,
                                    pending=pending, observe=observer.drain_observations)
+        response = self.assessment_reply(pending, response)
         if not observer.frame_current(frame):
             raise RuntimeError('candidate_observation_incomplete')
         if isinstance(response, dict) and response.keys() == {'verdict', 'reason'}:
@@ -310,8 +337,36 @@ class Delivery:
                 'rubric':'Pass: identifies the incorrect sum with code or a correct example. '
                          'Fail: completed assessment misses the defect or omits support. Otherwise unassessed.',
                 'genuine_question_response':{'status':'waiting','question':'Describe the unresolved question.'}}}
+            if len(encode_message({**token,'body':pending['body']})) > CHANNEL_BYTES:
+                state = self.store.get(self.origin,self.request)
+                directory = self.store.path.parent/state['attempt_id']
+                directory.mkdir(parents=True,exist_ok=True)
+                path = directory/('assessment-'+token['checkpoint']+'.json')
+                retained = {'binding':token,'attempt_id':state['attempt_id'],'completion':frame}
+                raw = json.dumps(retained,ensure_ascii=False,sort_keys=True).encode('utf-8')
+                with path.open('xb') as file:
+                    file.write(raw)
+                pending['body']['completion'] = {k:v for k,v in frame.items() if k not in ('messages','context')}
+                pending['body']['completion_reference'] = {'path':str(path.resolve()),
+                    'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'attempt_id':state['attempt_id']}
+                pending['body']['reference_instructions'] = (
+                    'Read the entire retained UTF-8 JSON frame with read_assessment_reference(event) '
+                    'from the trusted signed_in_delivery module, or verify byte count/SHA256, '
+                    'checkpoint binding, attempt and completion metadata equivalently. '
+                    'Assess the complete messages with context; include retained_sha256 in your '
+                    'verdict or waiting response. Never grade a missing, partial or mismatched artifact.')
             self.pending_assessment = pending
         return pending
+
+    def assessment_reply(self, pending, response):
+        reference = pending['body'].get('completion_reference')
+        if reference:
+            frame = read_assessment_reference({**pending['token'],'body':pending['body']})
+            if (frame != pending['frame'] or not isinstance(response,dict)
+                    or response.get('retained_sha256') != reference['sha256']):
+                raise ValueError('controller_reply_rejected')
+            return {k:v for k,v in response.items() if k != 'retained_sha256'}
+        return response
 
     def final_assessment(self, frame):
         if self.operator_wait:
@@ -324,6 +379,7 @@ class Delivery:
         pending = self.assessment_request(frame)
         # Native work has stopped. Only a grade for the same sealed artifact is accepted.
         response = self.checkpoint('assessment', pending['body'], pending=pending)
+        response = self.assessment_reply(pending, response)
         self.pending_assessment = None
         if isinstance(response, dict) and response.keys() == {'status','question'} and response['status'] == 'waiting':
             self.operator_wait = {'frame_sha256':frame['artifact_sha256'],'question':text(response['question'])}
