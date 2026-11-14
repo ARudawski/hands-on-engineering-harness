@@ -7,6 +7,8 @@ applyTo: '**'
 
 Use the selected skill's stages. Do not start a full workflow merely because its topic matches. Load applicable repository/module guidance and required skills before dependent work; reuse unchanged contents. Missing guidance or access blocks only dependent work.
 
+At every approval gate and the end of every work package, tell the user in plain language what happens next. An approval request must name the exact action and scope that approval will authorize. If the work is complete, say so.
+
 ## Routing
 
 | Need | Use |
@@ -16,7 +18,8 @@ Use the selected skill's stages. Do not start a full workflow merely because its
 | Plan a feature locally, with optional work-item publication | `plan-feature` |
 | Divide agreed work into verifiable outcomes | `plan-slices` |
 | Independent planning assessment | `plan-reviewer` |
-| Deliver a local task or remote issue | `deliver-task` |
+| Deliver general or mixed computer work; route by the requested deliverable | `deliver-task` |
+| Deliver a maintained software change | `deliver-code` |
 | Implement authorized scope | `implement-slice` |
 | Dispatch an independent change assessment | `review-code` |
 | Independent implementation assessment | `code-reviewer` |

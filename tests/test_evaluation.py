@@ -29,9 +29,26 @@ relay = module('relay')
 controller = module('run')
 native = module('native')
 probes = module('probes')
+worker = module('worker')
 
 
 class EvaluationGuards(unittest.TestCase):
+    def test_pinned_skill_inventory_accepts_old_and_new_packages_but_not_missing_skills(self):
+        baseline = {f'.apm/skills/{name}/SKILL.md' for name in (
+            'clarify-scope', 'write-spec', 'plan-slices', 'plan-feature', 'deliver-task', 'implement-slice', 'review-code')}
+        for expected in (baseline, baseline | {'.apm/skills/deliver-code/SKILL.md'}):
+            with self.subTest(count=len(expected)):
+                pinned = {p: 'pinned-hash' for p in expected | {'README.md'}}
+                worker.verify_skill_inventory(pinned, expected)
+                for missing in expected:
+                    with self.assertRaisesRegex(RuntimeError, 'Skill inventory'):
+                        worker.verify_skill_inventory(pinned, expected - {missing})
+                with self.assertRaisesRegex(RuntimeError, 'Skill inventory'):
+                    worker.verify_skill_inventory(pinned, expected | {'.apm/skills/foreign/SKILL.md'})
+        incomplete = baseline - {'.apm/skills/write-spec/SKILL.md'}
+        with self.assertRaisesRegex(RuntimeError, 'Skill inventory'):
+            worker.verify_skill_inventory(incomplete, incomplete)
+
     def setUp(self):
         self.request = {'model': 'fixed', 'reasoning': {'effort': 'xhigh', 'context': 'all_turns'}, 'store': False,
                         'stream': True, 'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': 'public probe'}]}]}

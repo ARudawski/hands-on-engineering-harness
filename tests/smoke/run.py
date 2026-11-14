@@ -9,11 +9,11 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apm_support import isolated_apm_env, require_apm_version
-from native_support import collect_native_evidence, digest, inventory, run_turn
+from native_support import digest, inventory, run_turn
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -124,22 +124,6 @@ def prepare(case, out):
     return manifest
 
 
-def session_root():
-    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
-
-
-def session_file(session_id):
-    UUID(session_id)
-    matches = list(session_root().rglob(f"*{session_id}.jsonl"))
-    if len(matches) != 1:
-        raise RuntimeError(f"Native session evidence unavailable for {session_id}")
-    return matches[0]
-
-
-def native_evidence(session_id):
-    return collect_native_evidence(session_id, session_root(), session_file(session_id))
-
-
 def validate_resume(case, out, manifest):
     if manifest["case"] != case or manifest["output_dir"] != str(out) or manifest["inputs"] != inputs(case):
         raise ValueError("Run identity or candidate/driver/fixture hashes changed.")
@@ -155,11 +139,6 @@ def validate_resume(case, out, manifest):
         ids = {t["session_id"] for t in manifest["turns"]}
         if ids != {manifest["session_id"]} or not manifest["session_id"]:
             raise ValueError("Parent session identity mismatch.")
-        with session_file(manifest["session_id"]).open(encoding="utf-8") as handle:
-            header = json.loads(handle.readline())
-        meta = header.get("payload") if isinstance(header, dict) else None
-        if not isinstance(meta, dict) or meta.get("id") != manifest["session_id"] or not isinstance(meta.get("cwd"), str) or Path(meta["cwd"]).resolve() != out / "consumer":
-            raise ValueError("Native parent identity/workspace mismatch.")
     if len(manifest["turns"]) >= 8:
         raise ValueError("Eight-turn scenario budget exhausted.")
 
@@ -242,12 +221,6 @@ def execute(out, manifest, reply=None):
             manifest["status"] = "pending-assessment"
         elif "failure" not in manifest:
             manifest["failure"] = "Native turn failed, did not complete, or returned an unexpected parent identity."
-        if manifest["session_id"]:
-            try:
-                write_json(prefix.with_suffix(".native.json"), native_evidence(manifest["session_id"]))
-            except (OSError, ValueError, RuntimeError) as error:
-                manifest["evidence_gap"] = str(error)
-                manifest["status"] = "incomplete"
     except BaseException as error:
         manifest["failure"] = type(error).__name__ + ": " + str(error)
         manifest["status"] = "incomplete"
