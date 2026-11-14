@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 from pathlib import Path
+import re
 import runpy
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from apm_support import isolated_apm_env, require_apm_version
 
 
 SOURCE = Path(__file__).resolve().parents[1]
-SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "implement-slice", "review-code"}
+SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code"}
 AGENTS = ("plan-reviewer", "code-reviewer")
 
 
@@ -91,6 +92,17 @@ class InstallTests(unittest.TestCase):
                 for target in (".agents", ".claude"):
                     actual = consumer / target / "skills" / source.relative_to(SOURCE / ".apm/skills")
                     self.assertEqual(actual.read_bytes(), source.read_bytes())
+        for target in (".agents", ".claude"):
+            skills = consumer / target / "skills"
+            shared = skills / "clarify-scope/references/planning.md"
+            self.assertTrue(shared.is_file())
+            for name in ("plan-feature", "deliver-task", "deliver-code"):
+                entry = skills / name / "SKILL.md"
+                text = entry.read_text(encoding="utf-8")
+                links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", text)
+                links += re.findall(r"^\[[^\]]+\]:\s*(\S+)", text, re.MULTILINE)
+                self.assertIn(shared.resolve(), [(entry.parent / link.split("#", 1)[0]).resolve()
+                                                for link in links if "://" not in link])
         self.assertEqual({p.name for p in (SOURCE / ".apm/agents").glob("*.agent.md")}, {f"{name}.agent.md" for name in AGENTS})
         for name in AGENTS:
             agent_source = (SOURCE / f".apm/agents/{name}.agent.md").read_text(encoding="utf-8")

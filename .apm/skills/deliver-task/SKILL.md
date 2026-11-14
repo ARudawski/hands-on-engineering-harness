@@ -1,21 +1,38 @@
 ---
 name: deliver-task
-description: Deliver a local task or remote issue through approved slices, independent reviews and optional VCS, CI and remote handoff.
+description: Plan and deliver general or mixed computer tasks, routing maintained software changes through deliver-code.
 ---
 
 # Deliver a task
 
-Load applicable guidance and required skills. Reuse the project root's `.tmp/<task>/spec.md` and navigation index; link approved durable baselines. A local task/plan is enough. Preserve decisions, IDs, approvals and evidence on resume; reconcile actual changes, comparisons, results/gaps and next authorized action.
+Load applicable guidance, required skills and [shared planning][planning]. Use one project-root `.tmp/<task>/spec.md` and navigation index for the requested deliverables. Preserve IDs, decisions, exact approvals, evidence and next action on resume. A local task or existing plan is sufficient; no repository or external service is required.
 
-After **every numbered stage and each reviewed slice in stage 5**, present results and next action, then end the turn for human approval, including N/A stages. Earlier approval does not approve a later result. Select VCS operations, push, Draft review requests and hosted CI only from explicit task/project requirements; connections or remote issue input grant no writes. Record unselected actions as N/A with a reason; unavailable selected actions remain pending, never silently replaced by local success.
+[planning]: ../clarify-scope/references/planning.md
+[engineering]: ../deliver-code/SKILL.md
 
-1. **Understand.** Read the task, relevant comments/specifications, affected code/tests/contracts and existing work. Resolve material uncertainty with evidence and `clarify-scope`; check consequential assumptions before dependent work.
-2. **Specify.** Use `write-spec` for the agreed outcome, exclusions, ACs, approach and checks. Preserve existing IDs and accepted limitations; agree material scope/AC changes.
-3. **Slice.** Use `plan-slices` for small verifiable outcomes, coverage, dependencies and order. Interdependent slices/unclear interfaces need independent `plan-reviewer` assessment before approval; correct findings in that session.
-4. **Prepare.** Preserve unrelated edits and establish the comparison before implementation: resolve available VCS references and pending changes, or capture before-content/path inventory and retain resulting after-state evidence, including added/deleted paths. Prepare local work; branch/base, push and Draft review requests apply only when selected. Follow project-specific timing; keep any review request Draft.
-5. **Implement each slice.** Use `implement-slice` → relevant checks → `review-code` → required corrections → affected checks and same-reviewer verification → human approval. Include staged, unstaged and relevant untracked changes or their local comparison equivalents. Slice approval authorizes only its applicable commit and stated next action; commit/push only when selected and authorized. Optional suggestions need no correction loop.
-6. **Verify the whole change.** Reconcile AC evidence/gaps and verify integration/cross-slice effects. Establish independent CODE-review coverage using `review-code`; reuse valid assessments and inspect uncovered interactions instead of repeating unchanged work. Required corrections return through the slice loop.
-7. **Validate applicable CI.** For required CI, identify current source/base and the tested revision (SHA when available). Missing/stale/running results remain gaps; poll with a bound and record the run/status/next action if unfinished. Inspect failures, report supported cause/proposed correction and pause for approval before the slice loop. Retry only after relevant change or a justified bounded transient retry. If CI is unselected, record N/A and retain local checks; still pause.
-8. **Hand off.** Reconcile source, records, affected durable documentation, results and limitations. Perform only authorized selected remote updates; report pending actions without claiming full completion. Route any further source edits through the slice loop. Present final results for approval; keep any review request Draft. No automatic merge, deployment or release.
+## Select the workflow
 
-Dispatch new PLAN/CODE assessments to fresh named reviewer sessions; resume each for corrections while its basis remains valid. Supply actual required context and a reproducible comparison, not just paths or a change summary. Missing essential guidance, reviewer, comparison or checks leaves the affected review/stage incomplete. Planning and reused evidence grant no new implementation or external authority.
+Route by the deliverable the user expects to keep, honoring explicit workflow selection and project requirements:
+
+- **General work:** documents, reports, reconciliation, research and other computer tasks. Reading code or using a disposable analysis script does not make the deliverable software.
+- **Software:** maintained scripts, application changes, automated tests and build/deployment configuration. Continue through [deliver-code][engineering] with the current record and exact next authorized action. Its eight-stage workflow, reviews and approval gates apply unchanged; do not run a generic checkpoint first.
+- **Mixed work:** keep one plan/record and apply `deliver-code` to the software portion. Track each portion's workflow, checks and authority explicitly; verify the combined result at handoff.
+
+For existing records, retain the recorded workflow before interpreting a stage number. Legacy engineering `deliver-task` records resume through `deliver-code` with their original stage meanings. Reuse valid completed planning and approvals by meaning and scope. Clarify a genuinely ambiguous route or saved stage before dependent work.
+
+## General delivery
+
+There is one default pre-execution checkpoint. Specific user/project requirements may add approvals or independent review. Shared planning and helper calls do not add routine checkpoints. There is no standing code-review or CI step for general work.
+
+1. **Prepare the plan.** Apply shared planning's Evidence, Scope, Specification and Work plan portions to the task's complexity. Record as many small verifiable slices as useful, each with a stable ID, scope and observable completion check. Resolve material questions before dependent work. A plan-only request stops with the usable record and next available action.
+2. **Authorize execution.** Present the plan and name the exact actions/slices approval will authorize, then pause. The user may authorize all or a subset; record the actual grant for each slice. Reuse an existing valid execution grant without asking again. Planning approval or route selection alone grants no execution or publication authority.
+3. **Execute authorized slices.** Perform only granted work, check each result and record its evidence/gaps before continuing. Unapproved slices remain pending. On interruption, resume from the recorded results and grant without repeating completed work or inventing approval. Diagnose failures and bound retries; changed scope or required authority needs agreement before dependent action.
+4. **Verify and hand off.** Check the overall result and interactions against the agreed acceptance criteria. Deliver outputs in their requested locations, retain concise evidence and pending work in the record, and state what happens next or that the work is complete. No routine second approval is required after authorized general work.
+
+## Mixed tasks and scope changes
+
+An existing engineering checkpoint may request authority for both software and general slices if it names both actions and their scope. A grant covering both satisfies the general pre-execution checkpoint while preserving all later engineering gates. Approval of an importer fix alone leaves its report pending; a grant covering the fix and report authorizes both within their stated scope. Keep the engineering portion's stage separate from general progress so stage numbers cannot change meaning.
+
+If analysis discovers an unrequested software fix, record it and seek scope agreement before changing software. Do not silently expand an analysis task into engineering delivery.
+
+Select external writes only from explicit task/project requirements and scoped authority. Use actual capabilities; unavailable selected actions stay pending, while unselected actions are N/A. Reading an issue or having connected tools grants no write authority. Preserve unrelated files/settings and keep credentials out of records.

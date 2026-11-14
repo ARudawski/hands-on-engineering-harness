@@ -16,6 +16,14 @@ from apm_support import isolated_apm_env, require_apm_version
 from native_support import digest, inventory
 
 
+def verify_skill_inventory(pinned_files, materialized_files):
+    expected = {p for p in pinned_files if p.startswith('.apm/skills/') and p.endswith('/SKILL.md')}
+    required = {f'.apm/skills/{name}/SKILL.md' for name in (
+        'clarify-scope', 'write-spec', 'plan-slices', 'plan-feature', 'deliver-task', 'implement-slice', 'review-code')}
+    if not required <= expected or set(materialized_files) != expected:
+        raise RuntimeError('Skill inventory differs from required pinned source')
+
+
 def native_foundation_files():
     """Exact public native-foundation-v2 inputs shared by both deployments."""
     return {
@@ -53,8 +61,7 @@ def install(inputs):
             raise RuntimeError('Empty materialization')
         skill_root = '.agents' if target == 'codex' else '.claude'
         skills = list((source / '.apm/skills').rglob('SKILL.md'))
-        if len(skills) != 7:
-            raise RuntimeError('Expected seven installed skills')
+        verify_skill_inventory(inputs['source_files'], (p.relative_to(source).as_posix() for p in skills))
         for p in (source / '.apm/skills').rglob('*'):
             if p.is_file() and digest(consumer / skill_root / 'skills' / p.relative_to(source / '.apm/skills')) != digest(p):
                 raise RuntimeError('Deployed skill/reference mismatch')

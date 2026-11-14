@@ -2,7 +2,7 @@
 
 Concise engineering workflows for Codex and Claude Code, packaged with stock APM.
 
-Seven skills cover planning and delivery: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
+Eight skills cover planning and delivery: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `deliver-code`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
 
 After installation, a local project directory and native client tools are enough. No ticket system, VCS repository/client, hosting account or MCP server is required. This project's GitHub repository is its distribution source. Consumers may choose tools such as Jira/Linear or GitLab/GitHub; examples are not service-specific runtime certifications.
 
@@ -52,9 +52,15 @@ Add `<!-- apm:start -->` and `<!-- apm:end -->` on separate lines in `AGENTS.md`
 
 In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-feature Add an export preview`. It researches, agrees scope, reviews a specification, reviews an actionable local plan, then hands it off. The first four stages pause for human approval. An existing task description or local specification is sufficient.
 
-Use `$deliver-task <local task or issue>` in Codex, or `/deliver-task <local task or issue>` in Claude Code. It understands, specifies, slices, prepares, implements/reviews each slice, verifies the combined change, checks applicable CI and hands off. Every stage and reviewed slice pauses for approval, including N/A stages. `implement-slice` handles authorized scope; `review-code` dispatches independent assessment without fixes. Helpers do not start delivery stages.
+Use `$deliver-task <local task or issue>` in Codex, or `/deliver-task <local task or issue>` in Claude Code. It routes by the requested result. General work uses one default pre-execution checkpoint for all or selected slices, then executes, verifies and hands off. Reading code or using a temporary analysis script is general work; delivering a maintained script or software change uses `deliver-code`.
+
+Invoke `$deliver-code <software task>` (or `/deliver-code` in Claude Code) directly for the same engineering path: understand, specify, slice, prepare, implement/review each slice, verify the combined change, check applicable CI and hand off. Every engineering stage and reviewed slice pauses for approval, including N/A stages. `implement-slice` handles authorized scope; `review-code` dispatches independent assessment without fixes. Helpers do not start delivery stages. Existing engineering `deliver-task` records retain their original stage meanings when resumed.
+
+For example, `$deliver-task Reconcile these inventories and produce an exceptions report` can plan two outputs and request one grant for both. For a mixed importer-fix/report task, approving only the fix leaves the report pending; a grant naming both authorizes both portions while preserving the engineering gates. An unrequested bug found during analysis needs scope agreement before a software change.
 
 For example, plan a bounded CSV preview with `plan-feature`, approve its local specification and plan, then pass `.tmp/csv-preview/spec.md` to `deliver-task` in the same project. Delivery retains the approved scope, IDs and decisions; publication remains optional.
+
+All three entry points load the same planning reference on demand and reuse valid completed work, reviews and scoped approvals. Their stage order and required approval/review boundaries remain visible in each entry point; a changed input reopens the affected work. A plan-only request stops with its record. At each gate or handoff, the next action and the scope of any requested approval are stated explicitly.
 
 Local delivery uses before/after content and path inventories when VCS is absent, including added/deleted paths. Select VCS, push, Draft review requests and hosted CI explicitly when needed. Missing selected capabilities remain pending; unselected actions are N/A. Reading an issue grants no writes. Any review request remains Draft; merge/deployment/release require separate authority.
 
@@ -74,6 +80,8 @@ Request publication explicitly when needed. Its exact payloads/destination recei
 | Package CI | Ubuntu 24.04, Python 3.11 and stock APM 0.35.0; installation/ownership, local tool-fixture and model-free smoke-driver guards, without model credentials. |
 
 These are tested baselines, not a minimum-version or broader compatibility guarantee. No cloud, desktop-specific, plugin or live-service certification is claimed. Models and connections remain consumer-owned.
+
+The shared-planning and general-delivery revision has local package/reference checks; live workflow evaluation was not performed for this change. The native observations below concern earlier workflow revisions.
 
 Local Codex checks ran outside Git with Git unavailable and service tools disabled. They verified all planning/delivery approval pauses, fresh/correction reviewers, actual context/comparison reads, missing prerequisites and preservation of unrelated files. An in-place both-target update continued the original approved CSV plan through delivery: 11 contract tests and six integration checks passed. A separate two-increment example passed 17 behavior tests; helper checks covered scoped red/green implementation and findings without fixes. Ordinary task records stayed Markdown.
 
