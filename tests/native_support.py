@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 
 
@@ -26,13 +28,53 @@ def inventory(directory, exclude=(), root_exclude=()):
     return result
 
 
+def native_env(cwd):
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).resolve().parent)}
+    if sys.platform == "win32":
+        # A fresh CLI has no desktop invocation context for registered-Core launch.
+        # Keep the selected sandbox, managed policy, credentials and model settings.
+        env.pop("CODEX_WINDOWS_REGISTERED_CORE", None)
+    return env
+
+
+def resolve_codex():
+    selected = os.environ.get("CODEX_BIN") or "codex"
+    executable = shutil.which(selected)
+    if not executable:
+        raise RuntimeError(f"Codex CLI unavailable: {selected!r}. Install the standalone CLI or set CODEX_BIN to its executable.")
+    return str(Path(executable).resolve())
+
+
+def check_codex_runtime(codex, cwd):
+    """Check startup and Windows sandbox file access before spending model tokens."""
+    version = subprocess.check_output([codex, "--version"], cwd=cwd, env=native_env(cwd),
+                                      text=True, stderr=subprocess.STDOUT, timeout=30).strip()
+    result = {"executable": codex, "version": version, "file_access": "not-probed-on-this-platform"}
+    if sys.platform == "win32":
+        scratch = Path(cwd) / ".tmp"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="native-preflight-", dir=scratch) as directory:
+            sentinel = Path(directory) / "read.txt"
+            sentinel.write_text("native-file-access-ok", encoding="utf-8")
+            shell = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+            read = "Get-Content -Raw -LiteralPath '" + str(sentinel.resolve()).replace("'", "''") + "'"
+            command = [codex, "sandbox", "--include-managed-config", "--permission-profile", ":workspace",
+                       "-C", str(Path(cwd).resolve()), "--", shell, "-NoProfile", "-NonInteractive", "-Command", read]
+            probe = run_turn(command, "", cwd, timeout=30)
+            if probe.returncode or probe.stdout.strip() != "native-file-access-ok":
+                detail = (probe.stderr or probe.stdout).strip()[-2000:]
+                raise RuntimeError(f"Native file-access preflight failed; no model run started. Check CODEX_BIN and run codex doctor. {detail}")
+        result["file_access"] = "passed"
+    return result
+
+
 def run_turn(command, prompt, cwd, timeout=1200):
     # Files avoid communicate() waiting on pipes inherited by descendants.
     with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         stdin.write(prompt.encode("utf-8"))
         stdin.seek(0)
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-        env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).resolve().parent)}
+        env = native_env(cwd)
         process = subprocess.Popen(command, stdin=stdin, stdout=stdout, stderr=stderr, cwd=cwd, env=env, **options)
         try:
             process.wait(timeout=timeout)

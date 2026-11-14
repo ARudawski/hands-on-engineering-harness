@@ -9,6 +9,7 @@ Load applicable guidance, required skills and [shared planning][planning]. Use o
 
 [planning]: ../clarify-scope/references/planning.md
 [engineering]: ../deliver-code/SKILL.md
+[research]: ../research/SKILL.md
 
 ## Select the workflow
 
@@ -18,11 +19,15 @@ Route by the deliverable the user expects to keep, honoring explicit workflow se
 - **Software:** maintained scripts, application changes, automated tests and build/deployment configuration. Continue through [deliver-code][engineering] with the current record and exact next authorized action. Its eight-stage workflow, reviews and approval gates apply unchanged; do not run a generic checkpoint first.
 - **Mixed work:** keep one plan/record and apply `deliver-code` to the software portion. Track each portion's workflow, checks and authority explicitly; verify the combined result at handoff.
 
+For a research answer/report or an explicitly selected research task or slice, load the [research type][research]. Keep generic delivery here and apply its research-specific guidance at the current planning, execution or verification stage. Direct `research` invocation fixes that selection and uses General delivery once. Loading the type within an active workflow does not restart planning, routing or approval; use the current record and scoped authority, then return the slice's results to its parent. Ordinary evidence gathering during another workflow does not by itself select a separate research task.
+
 For existing records, retain the recorded workflow before interpreting a stage number. Legacy engineering `deliver-task` records resume through `deliver-code` with their original stage meanings. Reuse valid completed planning and approvals by meaning and scope. Clarify a genuinely ambiguous route or saved stage before dependent work.
 
 ## General delivery
 
 There is one default pre-execution checkpoint. Specific user/project requirements may add approvals or independent review. Shared planning and helper calls do not add routine checkpoints. There is no standing code-review or CI step for general work.
+
+A fresh invocation authorizes plan preparation. Unless the user has already authorized execution, present the plan and stop. Permission to read files does not itself authorize advancing to the execution stage.
 
 1. **Prepare the plan.** Apply shared planning's Evidence, Scope, Specification and Work plan portions to the task's complexity. Record as many small verifiable slices as useful, each with a stable ID, scope and observable completion check. Resolve material questions before dependent work. A plan-only request stops with the usable record and next available action.
 2. **Authorize execution.** Present the plan and name the exact actions/slices approval will authorize, then pause. The user may authorize all or a subset; record the actual grant for each slice. Reuse an existing valid execution grant without asking again. Planning approval or route selection alone grants no execution or publication authority.
