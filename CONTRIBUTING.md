@@ -20,6 +20,10 @@ The suite checks native assets, install/repeat/update behavior, collisions, guid
 
 For behavior changes, exercise the affected installed-client path and approval/review boundaries; use a failing then passing check where a suitable seam exists. Inspect actual reviewer context/actions when changing delegation. Reuse unaffected evidence and record exact client/APM versions, surfaces and gaps. Static packaging checks do not establish model execution; keep support claims within observed results and explicitly accepted assumptions.
 
+For Codex native checks, use an authenticated CLI. The driver uses PATH by default; `CODEX_BIN` optionally selects another executable, such as a standalone installation when the bundled version has a runtime problem. On Windows, the standard standalone installer places it at `$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin\codex.exe`. Keep executable selection in the calling environment; do not commit machine paths or change consumer model/authentication settings.
+
+The smoke driver checks CLI startup and, on Windows, sandboxed file access before starting a model turn. A failed preflight records a diagnostic without consuming a turn; correct the runtime and resume the prepared fixture. Shared native launches remove the inherited `CODEX_WINDOWS_REGISTERED_CORE` desktop invocation marker only in the child environment. This prevents `registered Core launch requires an installed app` from an unrelated desktop launch context while retaining managed configuration and workspace permissions. Use `codex doctor` for remaining runtime failures; preserve failed evidence and do not disable sandboxing to get a passing check.
+
 For documentation-only changes, check accuracy, references and support claims. Update the README when public behavior or tested support changes. Do not publish a tag/release or claim new client/service support from a passing package test alone.
 
 Release approval identifies the exact tag/commit, notes, successful checks and accepted limits. Read back the tag and release after publication.

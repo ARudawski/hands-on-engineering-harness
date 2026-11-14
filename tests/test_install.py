@@ -20,7 +20,7 @@ from apm_support import isolated_apm_env, require_apm_version
 
 
 SOURCE = Path(__file__).resolve().parents[1]
-SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code", "route"}
+SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code", "route", "research"}
 AGENTS = ("plan-reviewer", "code-reviewer")
 
 
@@ -96,13 +96,16 @@ class InstallTests(unittest.TestCase):
             skills = consumer / target / "skills"
             shared = skills / "clarify-scope/references/planning.md"
             self.assertTrue(shared.is_file())
-            for name in ("plan-feature", "deliver-task", "deliver-code"):
+            for name, reference in (("plan-feature", shared), ("deliver-task", shared), ("deliver-code", shared),
+                                    ("research", skills / "deliver-task/SKILL.md"),
+                                    ("deliver-task", skills / "research/SKILL.md")):
                 entry = skills / name / "SKILL.md"
                 text = entry.read_text(encoding="utf-8")
                 links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", text)
                 links += re.findall(r"^\[[^\]]+\]:\s*(\S+)", text, re.MULTILINE)
-                self.assertIn(shared.resolve(), [(entry.parent / link.split("#", 1)[0]).resolve()
-                                                for link in links if "://" not in link])
+                self.assertTrue(reference.is_file())
+                self.assertIn(reference.resolve(), [(entry.parent / link.split("#", 1)[0]).resolve()
+                                                   for link in links if "://" not in link])
         self.assertEqual({p.name for p in (SOURCE / ".apm/agents").glob("*.agent.md")}, {f"{name}.agent.md" for name in AGENTS})
         for name in AGENTS:
             agent_source = (SOURCE / f".apm/agents/{name}.agent.md").read_text(encoding="utf-8")
@@ -158,6 +161,30 @@ class InstallTests(unittest.TestCase):
         self.assertIn("Package update sentinel", (consumer / "AGENTS.md").read_text(encoding="utf-8"))
         for path, content in unrelated.items():
             self.assertEqual((consumer / path).read_bytes(), content.encode("utf-8"))
+
+    def test_research_added_on_update(self):
+        # Exercise deployment of a newly introduced skill, not just replacement.
+        previous = self.root / "previous"
+        shutil.copytree(self.package, previous, ignore=shutil.ignore_patterns("research"))
+        manifest_path = self.consumer / "apm.yml"
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        manifest["dependencies"]["apm"][0]["path"] = str(previous)
+        manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+        record = self.consumer / ".tmp/research-task/spec.md"
+        record.parent.mkdir(parents=True)
+        record.write_bytes(b"R-1: approved research plan; execution pending.\n")
+        self.run_apm("install", "--only", "apm")
+        for target in (".agents", ".claude"):
+            self.assertFalse((self.consumer / target / "skills/research").exists())
+        manifest["dependencies"]["apm"][0]["path"] = str(self.package)
+        manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+        self.run_apm("install", "--only", "apm")
+        self.run_apm("compile", "--target", "codex")
+        for target in (".agents", ".claude"):
+            for name in ("research", "deliver-task"):
+                self.assertEqual((self.consumer / target / f"skills/{name}/SKILL.md").read_bytes(),
+                                 (self.package / f".apm/skills/{name}/SKILL.md").read_bytes())
+        self.assertEqual(record.read_bytes(), b"R-1: approved research plan; execution pending.\n")
 
     def test_unmanaged_collisions(self):
         cases = {

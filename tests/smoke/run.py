@@ -13,7 +13,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from apm_support import isolated_apm_env, require_apm_version
-from native_support import digest, inventory, run_turn
+from native_support import check_codex_runtime, digest, inventory, resolve_codex, run_turn
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -167,13 +167,17 @@ def parse_events(output):
 
 def execute(out, manifest, reply=None):
     consumer = out / "consumer"
-    codex = shutil.which("codex")
-    if not codex:
-        raise RuntimeError("Codex CLI unavailable; model check incomplete.")
+    codex = resolve_codex()
     number = len(manifest["turns"]) + 1
     prefix = out / f"turn-{number}"
     if any(out.glob(f"turn-{number}.*")):
         raise RuntimeError("Turn evidence already exists; refusing filename reuse.")
+    try:
+        manifest["runtime_preflight"] = check_codex_runtime(codex, consumer)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        manifest["runtime_preflight"] = {"executable": codex, "failure": str(error)}
+        write_json(out / "manifest.json", manifest)
+        raise
     location = f"\n\nThe project directory is {consumer}." if manifest["case"] in ORDINARY else f"\n\nThe active fixture worktree is {consumer}. Use that directory explicitly for local tool operations. Task writes are confined to its .tmp/csv-preview/. No implementation, project tests/builds, commits, pushes, external services or publication. Unrelated consumer settings and approved docs must remain unchanged."
     prompt = reply if reply is not None else PROMPTS[manifest["case"]] + location
     command = [codex, "exec", "-C", str(consumer), "--sandbox", "workspace-write"]
@@ -181,7 +185,7 @@ def execute(out, manifest, reply=None):
         command += ["resume", manifest["session_id"]]
     command += ["--skip-git-repo-check", "--json", "-o", str(prefix.with_suffix(".last.md")), "-"]
     if not manifest["turns"]:
-        manifest["codex_version"] = subprocess.check_output([codex, "--version"], text=True, stderr=subprocess.DEVNULL, timeout=30).strip()
+        manifest["codex_version"] = manifest["runtime_preflight"]["version"]
     turn = {"number": number, "session_id": manifest["session_id"], "exit_code": None,
             "completed": False, "identity_ok": False}
     manifest["turns"].append(turn)

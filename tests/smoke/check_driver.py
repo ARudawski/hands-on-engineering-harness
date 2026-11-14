@@ -87,7 +87,7 @@ class DriverGuards(unittest.TestCase):
                     (consumer / "__pycache__/export.pyc").write_bytes(b"derived")
                     noise = '[]\n' if mode == "invalid-event" else 'CLI warning\n'
                     return subprocess.CompletedProcess(command, 0, noise + '{"type":"thread.started","thread_id":"parent"}\n{"type":"turn.completed"}\n', "")
-                with patch.object(run.shutil, "which", return_value="codex"), patch.object(run.subprocess, "check_output", return_value="fixture-version"), patch.object(run, "run_turn", side_effect=model) as launch:
+                with patch.object(run, "resolve_codex", return_value="codex"), patch.object(run, "check_codex_runtime", return_value={"version": "fixture-version"}), patch.object(run, "run_turn", side_effect=model) as launch:
                     run.execute(out, manifest)
                     self.assertTrue(manifest["turns"][0]["completed"])
                     self.assertTrue(manifest["turns"][0]["identity_ok"])
@@ -179,7 +179,7 @@ class DriverGuards(unittest.TestCase):
                     if mode == "truncated-timeout":
                         raise subprocess.TimeoutExpired("codex", 1200, output=b'{"type":"thread.started","thread_id":"parent"}\n{"type":')
 
-                with patch.object(run.shutil, "which", return_value="codex"), patch.object(run.subprocess, "check_output", return_value="fixture-version"), patch.object(run, "run_turn", side_effect=model):
+                with patch.object(run, "resolve_codex", return_value="codex"), patch.object(run, "check_codex_runtime", return_value={"version": "fixture-version"}), patch.object(run, "run_turn", side_effect=model):
                     if mode == "interrupted":
                         with self.assertRaises(KeyboardInterrupt):
                             run.execute(out, manifest)
@@ -192,9 +192,24 @@ class DriverGuards(unittest.TestCase):
                     run.validate_resume("missing-context", out, saved)
                 prompt = (out / "turn-1.prompt.txt").read_bytes()
                 saved["turns"] = []
-                with patch.object(run.shutil, "which", return_value="codex"), self.assertRaisesRegex(RuntimeError, "filename reuse"):
+                with patch.object(run, "resolve_codex", return_value="codex"), self.assertRaisesRegex(RuntimeError, "filename reuse"):
                     run.execute(out, saved)
                 self.assertEqual((out / "turn-1.prompt.txt").read_bytes(), prompt)
+
+    def test_failed_preflight_does_not_start_or_consume_model_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "consumer").mkdir()
+            manifest = {"turns": [], "status": "prepared"}
+            with patch.object(run, "resolve_codex", return_value="codex"), patch.object(run, "check_codex_runtime", side_effect=RuntimeError("file access unavailable")), patch.object(run, "run_turn") as launch:
+                with self.assertRaisesRegex(RuntimeError, "file access unavailable"):
+                    run.execute(out, manifest)
+                launch.assert_not_called()
+            saved = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["turns"], [])
+            self.assertEqual(saved["status"], "prepared")
+            self.assertIn("file access unavailable", saved["runtime_preflight"]["failure"])
+            self.assertEqual(list(out.glob("turn-*")), [])
 
 
 if __name__ == "__main__":

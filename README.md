@@ -2,7 +2,7 @@
 
 Concise engineering workflows for Codex and Claude Code, packaged with stock APM.
 
-Nine skills cover routing, planning and delivery: `route`, `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `deliver-code`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
+Ten skills cover routing, planning and delivery: `route`, `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `research`, `deliver-code`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
 
 After installation, a local project directory and native client tools are enough. No ticket system, VCS repository/client, hosting account or MCP server is required. This project's GitHub repository is its distribution source. Consumers may choose tools such as Jira/Linear or GitLab/GitHub; examples are not service-specific runtime certifications.
 
@@ -56,6 +56,8 @@ In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-f
 
 Use `$deliver-task <local task or issue>` in Codex, or `/deliver-task <local task or issue>` in Claude Code. It routes by the requested result. General work uses one default pre-execution checkpoint for all or selected slices, then executes, verifies and hands off. Reading code or using a temporary analysis script is general work; delivering a maintained script or software change uses `deliver-code`.
 
+Use `$research Compare these options using the supplied sources` in Codex, or `/research` with the same request in Claude Code, to select research explicitly. `deliver-task` also selects it for a research answer/report or a research slice. The type guides question framing, source assessment, investigation and cited synthesis with clear uncertainties; `deliver-task` owns generic planning, authorization, progress and handoff. An active research slice reuses its parent's context and exact grant, then returns its findings without starting another workflow. Depth and output follow the request, from a short cited answer to a report. Routine evidence gathering within another workflow stays within that workflow.
+
 Invoke `$deliver-code <software task>` (or `/deliver-code` in Claude Code) directly for the same engineering path: understand, specify, slice, prepare, implement/review each slice, verify the combined change, check applicable CI and hand off. Every engineering stage and reviewed slice pauses for approval, including N/A stages. `implement-slice` handles authorized scope; `review-code` dispatches independent assessment without fixes. Helpers do not start delivery stages. Existing engineering `deliver-task` records retain their original stage meanings when resumed.
 
 For example, `$deliver-task Reconcile these inventories and produce an exceptions report` can plan two outputs and request one grant for both. For a mixed importer-fix/report task, approving only the fix leaves the report pending; a grant naming both authorizes both portions while preserving the engineering gates. An unrequested bug found during analysis needs scope agreement before a software change.
@@ -80,12 +82,15 @@ Request publication explicitly when needed. Its exact payloads/destination recei
 | --- | --- |
 | APM 0.35.0 | Both-target native skills/references, reviewers and instructions; fresh/repeat/update installs, collisions and unrelated-settings preservation. |
 | Codex CLI 0.166.0-alpha.5.1, Windows | Supervised local planning, delivery and helpers; approval gates, independent review, comparison, interruption/recovery and local handoff. |
+| Codex CLI 0.169.0, Windows | Supervised direct/routed research with plan approval and same-session resume; authorized research-slice reuse, evidence assessment and bounded outputs. |
 | Claude Code | Native package/format checks; model execution and runtime compatibility remain assumed. |
 | Package CI | Ubuntu 24.04, Python 3.11 and stock APM 0.35.0; installation/ownership, local tool-fixture and model-free smoke-driver guards, without model credentials. |
 
 These are tested baselines, not a minimum-version or broader compatibility guarantee. No cloud, desktop-specific, plugin or live-service certification is claimed. Models and connections remain consumer-owned.
 
-The shared-planning and general-delivery revision has local package/reference checks; live workflow evaluation was not performed for this change. The routing and end-of-turn guidance changes have package checks; native behavior verification is pending after Codex session initialization failed in the implementation environment. The native observations below concern earlier workflow revisions.
+The shared-planning, general-delivery, routing and end-of-turn revisions have package checks; full native coverage of those revisions remains incomplete. The research checks below cover the described research paths only. The remaining native observations concern earlier workflow revisions.
+
+The research type has both-target installation/reference checks and a supervised baseline-to-candidate upgrade check. The local package suite completed successfully: 227 tests, two existing skips. After clarifying fresh-task authorization in deliver-task, all three native Codex CLI 0.169.0 research checks passed. Direct and routed requests prepared a plan, paused, then resumed the same session after a plain approval and completed without another gate. An authorized research slice reused its grant and left unapproved work pending. Answers respected source/output constraints, cited inspected evidence, distinguished versions and shared provenance, and reported unavailable evidence and uncertainty. These are supervised existing-profile observations over a fixed source packet; Claude runtime behavior and broader research quality were not tested.
 
 Local Codex checks ran outside Git with Git unavailable and service tools disabled. They verified all planning/delivery approval pauses, fresh/correction reviewers, actual context/comparison reads, missing prerequisites and preservation of unrelated files. An in-place both-target update continued the original approved CSV plan through delivery: 11 contract tests and six integration checks passed. A separate two-increment example passed 17 behavior tests; helper checks covered scoped red/green implementation and findings without fixes. Ordinary task records stayed Markdown.
 
@@ -113,6 +118,8 @@ python tests/smoke/run.py planning --output-dir .tmp/smoke/planning --resume
 ```
 
 Set `APM_BIN` if needed. Preparation needs Git available for stock APM's GitPython startup. Fixtures have no Git repository and limit Git discovery above the consumer directory. The driver passes `--skip-git-repo-check` on first and resumed Codex turns. `resume-correction`, `missing-reviewer` and `missing-context` are targeted boundary cases with deliberate behavior instructions. `planning`, `clarify-scope` and `write-spec` use ordinary skill requests containing product facts and a project directory, with no preapproved records, reviewer or gate reminders. Existing consumer authentication/model settings are retained; runs request workspace-write and use the normal package installation. `--prepare-only` never calls a model.
+
+`CODEX_BIN` optionally overrides the CLI executable found on PATH. Before each model turn, the driver records the executable/version and checks Windows sandbox file access without calling a model. A failed preflight preserves the prepared fixture and turn allowance for a retry after repair. The Windows launch-context repair was checked with both bundled and standalone executables; a separate installation is not required for that fix. See [development runtime setup](CONTRIBUTING.md#checks) for handling and diagnostics.
 
 Inspect each turn before supplying its next input. After assessment, use `--resume --reply-file PATH`; the driver targets the recorded parent ID. A successful process stays `pending-assessment`, rather than declaring a behavioral pass. Cases allow at most eight parent turns of 1,200 seconds, followed by bounded process-tree cleanup on timeout/interruption. File-backed standard streams avoid waiting for inherited pipes. Failed/incomplete attempts cannot automatically continue or overwrite evidence. Retain failed results and allow at most one justified repeat per case.
 
