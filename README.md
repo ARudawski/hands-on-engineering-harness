@@ -2,7 +2,7 @@
 
 Concise engineering workflows for Codex and Claude Code, packaged with stock APM.
 
-Eight skills cover planning and delivery: `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `deliver-code`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
+Nine skills cover routing, planning and delivery: `route`, `clarify-scope`, `write-spec`, `plan-slices`, `plan-feature`, `deliver-task`, `deliver-code`, `implement-slice` and `review-code`. Independent `plan-reviewer` and `code-reviewer` roles assess plans and changes. Planning produces an approved local plan; publication and remote delivery actions are optional.
 
 After installation, a local project directory and native client tools are enough. No ticket system, VCS repository/client, hosting account or MCP server is required. This project's GitHub repository is its distribution source. Consumers may choose tools such as Jira/Linear or GitLab/GitHub; examples are not service-specific runtime certifications.
 
@@ -50,6 +50,8 @@ Add `<!-- apm:start -->` and `<!-- apm:end -->` on separate lines in `AGENTS.md`
 
 ## Use
 
+Ask `$route Which skill can review my current diff?` in Codex or `/route Which skill can review my current diff?` in Claude Code. A plain “what's next?” also uses the current task's progress and approvals to recommend one next step, with a reason and a concrete example. Routing ends with advice. For a reviewed specification awaiting approval, the next step is the scoped approval reply; for an approved software plan ready for delivery, it can be `$deliver-code .tmp/csv-preview/spec.md` (or `/deliver-code` in Claude Code).
+
 In Codex, invoke `$plan-feature Add an export preview`; in Claude Code, `/plan-feature Add an export preview`. It researches, agrees scope, reviews a specification, reviews an actionable local plan, then hands it off. The first four stages pause for human approval. An existing task description or local specification is sufficient.
 
 Use `$deliver-task <local task or issue>` in Codex, or `/deliver-task <local task or issue>` in Claude Code. It routes by the requested result. General work uses one default pre-execution checkpoint for all or selected slices, then executes, verifies and hands off. Reading code or using a temporary analysis script is general work; delivering a maintained script or software change uses `deliver-code`.
@@ -60,7 +62,9 @@ For example, `$deliver-task Reconcile these inventories and produce an exception
 
 For example, plan a bounded CSV preview with `plan-feature`, approve its local specification and plan, then pass `.tmp/csv-preview/spec.md` to `deliver-task` in the same project. Delivery retains the approved scope, IDs and decisions; publication remains optional.
 
-All three entry points load the same planning reference on demand and reuse valid completed work, reviews and scoped approvals. Their stage order and required approval/review boundaries remain visible in each entry point; a changed input reopens the affected work. A plan-only request stops with its record. At each gate or handoff, the next action and the scope of any requested approval are stated explicitly.
+All three entry points load the same planning reference on demand and reuse valid completed work, reviews and scoped approvals. Their stage order and required approval/review boundaries remain visible in each entry point; a changed input reopens the affected work. A plan-only request stops with its record.
+
+After substantial work, the harness closes with a brief, plain-language account of the result and the next action or decision. For example, "The export specification has passed review. If you approve it, I’ll prepare and review the implementation plan." The active workflow determines the next step, including any required approval. Completed work ends with a completion message; routine clarification can simply ask its question.
 
 Local delivery uses before/after content and path inventories when VCS is absent, including added/deleted paths. Select VCS, push, Draft review requests and hosted CI explicitly when needed. Missing selected capabilities remain pending; unselected actions are N/A. Reading an issue grants no writes. Any review request remains Draft; merge/deployment/release require separate authority.
 
@@ -81,7 +85,7 @@ Request publication explicitly when needed. Its exact payloads/destination recei
 
 These are tested baselines, not a minimum-version or broader compatibility guarantee. No cloud, desktop-specific, plugin or live-service certification is claimed. Models and connections remain consumer-owned.
 
-The shared-planning and general-delivery revision has local package/reference checks; live workflow evaluation was not performed for this change. The native observations below concern earlier workflow revisions.
+The shared-planning and general-delivery revision has local package/reference checks; live workflow evaluation was not performed for this change. The routing and end-of-turn guidance changes have package checks; native behavior verification is pending after Codex session initialization failed in the implementation environment. The native observations below concern earlier workflow revisions.
 
 Local Codex checks ran outside Git with Git unavailable and service tools disabled. They verified all planning/delivery approval pauses, fresh/correction reviewers, actual context/comparison reads, missing prerequisites and preservation of unrelated files. An in-place both-target update continued the original approved CSV plan through delivery: 11 contract tests and six integration checks passed. A separate two-increment example passed 17 behavior tests; helper checks covered scoped red/green implementation and findings without fixes. Ordinary task records stayed Markdown.
 

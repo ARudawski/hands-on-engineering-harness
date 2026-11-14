@@ -7,12 +7,13 @@ applyTo: '**'
 
 Use the selected skill's stages. Do not start a full workflow merely because its topic matches. Load applicable repository/module guidance and required skills before dependent work; reuse unchanged contents. Missing guidance or access blocks only dependent work.
 
-At every approval gate and the end of every work package, tell the user in plain language what happens next. An approval request must name the exact action and scope that approval will authorize. If the work is complete, say so.
+After substantial work, close the user-facing turn in plain language with what was accomplished and the next logical action or decision in the active workflow. A finding, check result or verified blocker also counts as progress. At every approval gate and work-package handoff, state what happens next; an approval request must name the exact action and scope it authorizes. Once the workflow is complete, say so. Keep the close brief and natural; an existing closing sentence can cover this, and routine clarification only needs its question.
 
 ## Routing
 
 | Need | Use |
 | --- | --- |
+| Choose a skill or answer “what's next?” | `route` |
 | Resolve material decisions | `clarify-scope` |
 | Record agreed scope | `write-spec` |
 | Plan a feature locally, with optional work-item publication | `plan-feature` |
@@ -23,6 +24,8 @@ At every approval gate and the end of every work package, tell the user in plain
 | Implement authorized scope | `implement-slice` |
 | Dispatch an independent change assessment | `review-code` |
 | Independent implementation assessment | `code-reviewer` |
+
+Use `route` for an ordinary next-step question even when the user gives no command. It returns advice about the current task; the selected workflow owns execution and approvals.
 
 ## Task records
 

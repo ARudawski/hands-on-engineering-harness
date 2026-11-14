@@ -1,6 +1,6 @@
 # Third-party notices
 
-Portions of the planning instructions adapt ideas and instructions from
+Portions of the routing and planning instructions adapt ideas and instructions from
 [mattpocock/skills](https://github.com/mattpocock/skills). Packaging, scope and
 workflow behavior have been adapted for this project.
 

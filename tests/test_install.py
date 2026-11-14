@@ -20,7 +20,7 @@ from apm_support import isolated_apm_env, require_apm_version
 
 
 SOURCE = Path(__file__).resolve().parents[1]
-SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code"}
+SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code", "route"}
 AGENTS = ("plan-reviewer", "code-reviewer")
 
 
