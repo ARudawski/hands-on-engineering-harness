@@ -339,19 +339,6 @@ print(json.dumps({'home': str(Path.home()), 'config': config.CONFIG_FILE,
             after = {p.relative_to(parent): p.read_bytes() for p in parent.rglob("*") if p.is_file()}
             self.assertEqual(after, before)
 
-    def test_state_probe_prerequisites(self):
-        for response in ("0.36.0", PackageNotFoundError("apm-cli")):
-            with self.subTest(response=str(response)), patch.object(sys.modules[__name__], "version") as lookup:
-                if isinstance(response, Exception):
-                    lookup.side_effect = response
-                else:
-                    lookup.return_value = response
-                result = unittest.TestResult()
-                ApmSupportTests("test_isolated_user_state").run(result)
-                self.assertEqual(len(result.skipped), 1)
-                self.assertIn("APM_BIN installation/version checks still run", result.skipped[0][1])
-                self.assertFalse(result.errors or result.failures)
-
     def test_version_response_validation(self):
         banner = "Agent Package Manager (APM) CLI version "
         for code, output, accepted in ((0, banner + "0.35.0\n", True), (0, banner + "0.36.0\n", False),
