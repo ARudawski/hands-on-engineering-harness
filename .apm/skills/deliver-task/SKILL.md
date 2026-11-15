@@ -10,6 +10,7 @@ Load applicable guidance, required skills and [shared planning][planning]. Use o
 [planning]: ../clarify-scope/references/planning.md
 [engineering]: ../deliver-code/SKILL.md
 [research]: ../research/SKILL.md
+[image]: ../create-image/SKILL.md
 
 ## Select the workflow
 
@@ -20,6 +21,8 @@ Route by the deliverable the user expects to keep, honoring explicit workflow se
 - **Mixed work:** keep one plan/record and apply `deliver-code` to the software portion. Track each portion's workflow, checks and authority explicitly; verify the combined result at handoff.
 
 For a research answer/report or an explicitly selected research task or slice, load the [research type][research]. Keep generic delivery here and apply its research-specific guidance at the current planning, execution or verification stage. Direct `research` invocation fixes that selection and uses General delivery once. Loading the type within an active workflow does not restart planning, routing or approval; use the current record and scoped authority, then return the slice's results to its parent. Ordinary evidence gathering during another workflow does not by itself select a separate research task.
+
+For a requested visual artifact or an explicitly selected image slice, load the [create-image type][image]. It covers expressive images and information graphics, including edits and deterministic rendering. Keep generic delivery here; direct invocation selects General delivery once, and an authorized image slice reuses its parent's stage, record and exact grant without another execution checkpoint. Apply the type's exploration, creative selection, inspection and refinement guidance at the corresponding stage. Maintained software portions still use `deliver-code`.
 
 For existing records, retain the recorded workflow before interpreting a stage number. Legacy engineering `deliver-task` records resume through `deliver-code` with their original stage meanings. Reuse valid completed planning and approvals by meaning and scope. Clarify a genuinely ambiguous route or saved stage before dependent work.
 

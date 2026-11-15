@@ -21,6 +21,7 @@ After substantial work, close the user-facing turn in plain language with what w
 | Independent planning assessment | `plan-reviewer` |
 | Deliver general or mixed computer work; route by the requested deliverable | `deliver-task` |
 | Investigate a question or deliver a research answer with assessed sources | `research` |
+| Create or edit a visual artifact, including art and information graphics | `create-image` |
 | Deliver a maintained software change | `deliver-code` |
 | Implement authorized scope | `implement-slice` |
 | Dispatch an independent change assessment | `review-code` |

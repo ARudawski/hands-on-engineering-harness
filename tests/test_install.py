@@ -20,7 +20,7 @@ from apm_support import isolated_apm_env, require_apm_version
 
 
 SOURCE = Path(__file__).resolve().parents[1]
-SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code", "route", "research"}
+SKILLS = {"clarify-scope", "write-spec", "plan-slices", "plan-feature", "deliver-task", "deliver-code", "implement-slice", "review-code", "route", "research", "create-image"}
 AGENTS = ("plan-reviewer", "code-reviewer")
 
 
@@ -98,7 +98,9 @@ class InstallTests(unittest.TestCase):
             self.assertTrue(shared.is_file())
             for name, reference in (("plan-feature", shared), ("deliver-task", shared), ("deliver-code", shared),
                                     ("research", skills / "deliver-task/SKILL.md"),
-                                    ("deliver-task", skills / "research/SKILL.md")):
+                                    ("deliver-task", skills / "research/SKILL.md"),
+                                    ("create-image", skills / "deliver-task/SKILL.md"),
+                                    ("deliver-task", skills / "create-image/SKILL.md")):
                 entry = skills / name / "SKILL.md"
                 text = entry.read_text(encoding="utf-8")
                 links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", text)
@@ -163,28 +165,35 @@ class InstallTests(unittest.TestCase):
             self.assertEqual((consumer / path).read_bytes(), content.encode("utf-8"))
 
     def test_research_added_on_update(self):
+        self.assert_skill_added_on_update("research")
+
+    def test_create_image_added_on_update(self):
+        self.assert_skill_added_on_update("create-image")
+
+    def assert_skill_added_on_update(self, skill):
         # Exercise deployment of a newly introduced skill, not just replacement.
         previous = self.root / "previous"
-        shutil.copytree(self.package, previous, ignore=shutil.ignore_patterns("research"))
+        shutil.copytree(self.package, previous, ignore=shutil.ignore_patterns(skill))
         manifest_path = self.consumer / "apm.yml"
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         manifest["dependencies"]["apm"][0]["path"] = str(previous)
         manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
-        record = self.consumer / ".tmp/research-task/spec.md"
+        record = self.consumer / f".tmp/{skill}-task/spec.md"
         record.parent.mkdir(parents=True)
-        record.write_bytes(b"R-1: approved research plan; execution pending.\n")
+        recorded = f"{skill}: approved plan; execution pending.\n".encode("utf-8")
+        record.write_bytes(recorded)
         self.run_apm("install", "--only", "apm")
         for target in (".agents", ".claude"):
-            self.assertFalse((self.consumer / target / "skills/research").exists())
+            self.assertFalse((self.consumer / target / f"skills/{skill}").exists())
         manifest["dependencies"]["apm"][0]["path"] = str(self.package)
         manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
         self.run_apm("install", "--only", "apm")
         self.run_apm("compile", "--target", "codex")
         for target in (".agents", ".claude"):
-            for name in ("research", "deliver-task"):
+            for name in (skill, "deliver-task"):
                 self.assertEqual((self.consumer / target / f"skills/{name}/SKILL.md").read_bytes(),
                                  (self.package / f".apm/skills/{name}/SKILL.md").read_bytes())
-        self.assertEqual(record.read_bytes(), b"R-1: approved research plan; execution pending.\n")
+        self.assertEqual(record.read_bytes(), recorded)
 
     def test_unmanaged_collisions(self):
         cases = {
