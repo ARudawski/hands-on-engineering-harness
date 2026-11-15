@@ -21,6 +21,45 @@ apm install ARudawski/hands-on-engineering-harness#main --target claude
 
 For an intentionally fixed revision, optionally replace `#main` with `#<full-commit-SHA>`. APM records the resolved commit in `apm.lock.yaml`, including when installing from a branch.
 
+### ChatGPT plugin candidate
+
+Build a private skills-only plugin from the same `.apm` sources with Python 3.11
+and PyYAML (included with the test setup):
+
+```sh
+python scripts/build_plugin.py --output .tmp/hands-on-engineering-harness.zip
+```
+
+The archive contains ten exposed skills. Each includes its own generated copy of
+the complete supporting workflow tree, shared guidance and both reviewer
+contracts, so it can work without sibling skill bundles. Canonical `.apm` files
+remain unchanged. Builds from identical inputs produce identical ZIP bytes;
+`source-hashes.json` records canonical input hashes. Output inside this repository
+must be under `.tmp/`; output elsewhere is also allowed. Generated files stay out
+of commits.
+
+To save the candidate to your account, ask Plugin Creator to create a private
+plugin from that archive. Check the saved release for all ten skills and their
+support files; archive validation alone does not establish ingestion. On mobile,
+open the sidebar, select **Plugins**, find **Hands-on Engineering Harness**, and
+install it if prompted. In a fresh Work conversation, select the plugin with `@`
+and ask `Use @route: what's next?` or `Use @deliver-task to ...`.
+
+Engineering execution needs a project filesystem and independent reviewer
+sessions. The adapter loads the exact named reviewer contracts into fresh
+independent sessions; it does not register Codex/Claude native agent definitions.
+Unavailable filesystem, tools, reviewer context or delegation leaves the affected
+work pending. Installing the plugin does not transfer your computer's projects,
+credentials or connections. Advice and clarification can use available context.
+
+This is a plugin candidate, not a certification of mobile/installed behavior.
+Test routing, direct helpers, approval gates and reviewer context in the actual
+target runtime before relying on engineering delivery. Account installation and
+runtime observations must be reported separately from local package checks.
+There is no automatic GitHub sync: rebuild after source changes and update the
+existing private plugin, preserving its identity. Do not create a second plugin
+to refresh an existing installation.
+
 APM installs skills to `.agents/skills/` (Codex) or `.claude/skills/` (Claude), with native reviewer definitions and guidance. With version control, ignore `.tmp/`. Existing project/module guidance remains authoritative.
 
 The package supplies no installer hooks, provider/model pins or MCP configuration. Use your existing models, credentials and configured tools.
