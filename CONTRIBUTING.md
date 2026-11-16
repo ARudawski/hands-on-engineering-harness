@@ -18,6 +18,15 @@ git diff --check
 
 The suite checks native assets, install/repeat/update behavior, collisions, guidance ownership and the local tool fixture. `APM_BIN` can select an existing APM executable. CI runs these package checks without model credentials.
 
+`tests/test_plugin.py` also checks the portable plugin builder, self-contained
+reference trees, canonical-source preservation, repeatable output and rejected
+invalid inputs. Edit canonical workflows under `.apm/`; keep ChatGPT host
+adaptation in the builder rather than maintaining generated workflow copies.
+When changing the adapter, inspect actual independent-review context and approval
+behavior using the generated candidate. Saved-component readback and installed
+runtime checks remain separate from archive/unit checks. Keep private account
+publication outside credential-free CI.
+
 For behavior changes, exercise the affected installed-client path and approval/review boundaries; use a failing then passing check where a suitable seam exists. Inspect actual reviewer context/actions when changing delegation. Reuse unaffected evidence and record exact client/APM versions, surfaces and gaps. Static packaging checks do not establish model execution; keep support claims within observed results and explicitly accepted assumptions.
 
 For Codex native checks, use an authenticated CLI. The driver uses PATH by default; `CODEX_BIN` optionally selects another executable, such as a standalone installation when the bundled version has a runtime problem. On Windows, the standard standalone installer places it at `$env:LOCALAPPDATA\Programs\OpenAI\Codex\bin\codex.exe`. Keep executable selection in the calling environment; do not commit machine paths or change consumer model/authentication settings.

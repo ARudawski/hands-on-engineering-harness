@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hands-on-engineering-harness",
+  "version": "0.1.0",
+  "description": "Planning, research and delivery workflows with scoped approvals and independent review.",
+  "author": { "name": "ARudawski" },
+  "repository": "https://github.com/ARudawski/hands-on-engineering-harness",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Hands-on Engineering Harness",
+        "shortDescription": "Plan, review and deliver",
+        "longDescription": "Ten workflows for routing, scope, specifications, planning, research and delivery. Preserves approval gates and independent reviewer contracts; engineering execution requires filesystem and independent-session capabilities.",
+        "developerName": "ARudawski",
+        "capabilities": [],
+        "defaultPrompt": "Use @deliver-task to plan and deliver my task."
+      }
+    }
+  }
+}
